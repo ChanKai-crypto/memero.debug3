@@ -29,6 +29,7 @@ function toPublicQuiz(row) {
     config: row.config,
     language: row.language,
     premiumOnly: row.premium_only,
+    official: row.official,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

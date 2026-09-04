@@ -55,13 +55,16 @@ router.get("/:id", authenticate(false), async (req, res, next) => {
 // POST /api/quizzes
 router.post("/", authenticate(true), async (req, res, next) => {
   try {
-    const { title, difficulty, format, raw, config, language, premiumOnly } = req.body || {};
+    const { title, difficulty, format, raw, config, language, premiumOnly, official } = req.body || {};
 
     if (!title || !raw) {
       return res.status(400).json({ error: "Titre et contenu du quiz requis." });
     }
     if (premiumOnly && req.user.role !== "admin") {
       return res.status(403).json({ error: "Seul un administrateur peut marquer un quiz Premium." });
+    }
+    if (official && req.user.role !== "admin") {
+      return res.status(403).json({ error: "Seul un administrateur peut marquer un quiz comme officiel." });
     }
 
     const row = await db.createQuiz({
@@ -74,6 +77,7 @@ router.post("/", authenticate(true), async (req, res, next) => {
       config: config || {},
       language: language || null,
       premium_only: !!premiumOnly,
+      official: !!official,
     });
 
     res.status(201).json({ quiz: toPublicQuiz(row) });
@@ -89,7 +93,7 @@ router.put("/:id", authenticate(true), async (req, res, next) => {
     if (!existing) return res.status(404).json({ error: "Quiz introuvable." });
     if (!canEdit(req.user, existing)) return res.status(403).json({ error: "Non autorisé." });
 
-    const { title, difficulty, format, raw, config, language, premiumOnly } = req.body || {};
+    const { title, difficulty, format, raw, config, language, premiumOnly, official } = req.body || {};
     const patch = { updated_at: new Date().toISOString() };
     if (title) patch.title = String(title).slice(0, 200);
     if (difficulty) patch.difficulty = difficulty;
@@ -102,6 +106,12 @@ router.put("/:id", authenticate(true), async (req, res, next) => {
         return res.status(403).json({ error: "Seul un administrateur peut marquer un quiz Premium." });
       }
       patch.premium_only = premiumOnly;
+    }
+    if (typeof official === "boolean") {
+      if (official && req.user.role !== "admin") {
+        return res.status(403).json({ error: "Seul un administrateur peut marquer un quiz comme officiel." });
+      }
+      patch.official = official;
     }
 
     const row = await db.updateQuiz(req.params.id, patch);

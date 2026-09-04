@@ -50,12 +50,19 @@ create table if not exists quizzes (
   config jsonb not null default '{}'::jsonb,
   language text,
   premium_only boolean not null default false,
+  official boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
+-- Si la table "quizzes" existait déjà (créée avant l'ajout des quiz "officiels"),
+-- cette ligne ajoute juste la colonne manquante sans rien casser. Sans danger
+-- de la relancer même si la colonne existe déjà.
+alter table quizzes add column if not exists official boolean not null default false;
+
 create index if not exists quizzes_owner_idx on quizzes (owner_id);
 create index if not exists quizzes_premium_idx on quizzes (premium_only);
+create index if not exists quizzes_official_idx on quizzes (official);
 
 -- Important : la "service role key" utilisée par le backend contourne RLS
 -- de toute façon, mais on active RLS par bonnes pratiques (empêche tout

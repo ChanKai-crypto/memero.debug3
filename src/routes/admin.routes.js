@@ -86,15 +86,16 @@ router.delete("/quizzes/:id", async (req, res, next) => {
   }
 });
 
-// PATCH /api/admin/quizzes/:id  { premiumOnly? }
+// PATCH /api/admin/quizzes/:id  { premiumOnly?, official? }
 router.patch("/quizzes/:id", async (req, res, next) => {
   try {
     const existing = await db.getQuizById(req.params.id);
     if (!existing) return res.status(404).json({ error: "Quiz introuvable." });
 
-    const { premiumOnly } = req.body || {};
+    const { premiumOnly, official } = req.body || {};
     const patch = { updated_at: new Date().toISOString() };
     if (typeof premiumOnly === "boolean") patch.premium_only = premiumOnly;
+    if (typeof official === "boolean") patch.official = official;
 
     const row = await db.updateQuiz(req.params.id, patch);
     res.json({ quiz: toPublicQuiz(row) });

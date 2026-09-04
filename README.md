@@ -102,6 +102,7 @@ curl http://localhost:4000/api/admin/users -H "Authorization: Bearer TOKEN_ADMIN
 | POST    | `/api/quizzes`                  | connecté          | Publier un quiz |
 | PUT     | `/api/quizzes/:id`               | propriétaire/admin| Modifier un quiz |
 | DELETE  | `/api/quizzes/:id`               | propriétaire/admin| Supprimer un quiz |
+| GET     | `/api/leaderboard?limit=20`      | public            | Classement des joueurs par score cumulé |
 | GET     | `/api/admin/users`               | **admin**         | Lister tous les comptes |
 | PATCH   | `/api/admin/users/:id`            | **admin**         | Changer rôle / abonnement / gemmes / bannir |
 | DELETE  | `/api/admin/users/:id`            | **admin**         | Supprimer un compte |

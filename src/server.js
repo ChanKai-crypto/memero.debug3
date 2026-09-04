@@ -6,6 +6,7 @@ const authRoutes = require("./routes/auth.routes");
 const userRoutes = require("./routes/users.routes");
 const quizRoutes = require("./routes/quizzes.routes");
 const adminRoutes = require("./routes/admin.routes");
+const leaderboardRoutes = require("./routes/leaderboard.routes");
 
 const app = express();
 
@@ -25,6 +26,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/quizzes", quizRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/leaderboard", leaderboardRoutes);
 
 // 404 générique pour toute route API inconnue
 app.use("/api", (req, res) => {

@@ -89,6 +89,23 @@ async function listUsers() {
   return data;
 }
 
+/** Classement des joueurs par score cumulé (game.lifetimeScore). */
+async function listLeaderboard(limit) {
+  const { data, error } = await supabase
+    .from("users")
+    .select("username, avatar_url, game")
+    .limit(1000);
+  throwIfError(error, "listLeaderboard");
+  return (data || [])
+    .map((u) => ({
+      username: u.username,
+      avatarUrl: u.avatar_url,
+      lifetimeScore: (u.game && u.game.lifetimeScore) || 0,
+    }))
+    .sort((a, b) => b.lifetimeScore - a.lifetimeScore)
+    .slice(0, limit || 20);
+}
+
 /* ---------------------------------- Quiz ------------------------------------ */
 
 async function getQuizById(id) {
@@ -136,6 +153,7 @@ module.exports = {
   updateUser,
   deleteUser,
   listUsers,
+  listLeaderboard,
   getQuizById,
   createQuiz,
   updateQuiz,

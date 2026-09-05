@@ -12,6 +12,8 @@ function toPublicUser(row) {
     subscription: row.subscription,
     game: row.game,
     stats: row.stats,
+    history: row.history || [],
+    playlists: row.playlists || [],
   };
 }
 

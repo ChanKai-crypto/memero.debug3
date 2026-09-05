@@ -100,4 +100,41 @@ router.post("/me/subscribe", authenticate(true), async (req, res, next) => {
   }
 });
 
+// POST /api/users/me/history  (une entrée d'historique de partie)
+router.post("/me/history", authenticate(true), async (req, res, next) => {
+  try {
+    const entry = req.body || {};
+    if (!entry || typeof entry !== "object") {
+      return res.status(400).json({ error: "Entrée d'historique invalide." });
+    }
+    const history = Array.isArray(req.user.history) ? req.user.history.slice() : [];
+    history.push({ ...entry, receivedAt: new Date().toISOString() });
+    if (history.length > 500) history.splice(0, history.length - 500);
+
+    const row = await db.updateUser(req.user.id, { history });
+    res.status(201).json({ user: toPublicUser(row) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// GET /api/users/me/playlists
+router.get("/me/playlists", authenticate(true), (req, res) => {
+  res.json({ playlists: Array.isArray(req.user.playlists) ? req.user.playlists : [] });
+});
+
+// PUT /api/users/me/playlists  { playlists: [...] }
+router.put("/me/playlists", authenticate(true), async (req, res, next) => {
+  try {
+    const { playlists } = req.body || {};
+    if (!Array.isArray(playlists)) {
+      return res.status(400).json({ error: "playlists doit être un tableau." });
+    }
+    const row = await db.updateUser(req.user.id, { playlists });
+    res.json({ playlists: row.playlists || [] });
+  } catch (e) {
+    next(e);
+  }
+});
+
 module.exports = router;

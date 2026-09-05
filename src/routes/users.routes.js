@@ -2,6 +2,7 @@ const express = require("express");
 const db = require("../db");
 const authenticate = require("../middleware/authenticate");
 const { toPublicUser } = require("../utils/mappers");
+const { hashPassword, verifyPassword } = require("../utils/auth");
 
 const router = express.Router();
 
@@ -132,6 +133,41 @@ router.put("/me/playlists", authenticate(true), async (req, res, next) => {
     }
     const row = await db.updateUser(req.user.id, { playlists });
     res.json({ playlists: row.playlists || [] });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// PATCH /api/users/me/password  { currentPassword, newPassword }
+router.patch("/me/password", authenticate(true), async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: "Mot de passe actuel et nouveau mot de passe requis." });
+    }
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({ error: "Le nouveau mot de passe doit faire au moins 6 caractères." });
+    }
+    if (!verifyPassword(currentPassword, req.user.password_hash)) {
+      return res.status(401).json({ error: "Mot de passe actuel incorrect." });
+    }
+
+    await db.updateUser(req.user.id, { password_hash: hashPassword(newPassword) });
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// DELETE /api/users/me  { password }  (le compte doit confirmer son mot de passe)
+router.delete("/me", authenticate(true), async (req, res, next) => {
+  try {
+    const { password } = req.body || {};
+    if (!password || !verifyPassword(password, req.user.password_hash)) {
+      return res.status(401).json({ error: "Mot de passe incorrect." });
+    }
+    await db.deleteUser(req.user.id);
+    res.status(204).end();
   } catch (e) {
     next(e);
   }

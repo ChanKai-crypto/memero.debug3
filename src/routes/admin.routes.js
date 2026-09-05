@@ -1,3 +1,4 @@
+const { hashPassword } = require("../utils/auth");
 const express = require("express");
 const db = require("../db");
 const authenticate = require("../middleware/authenticate");
@@ -14,6 +15,27 @@ router.get("/users", async (req, res, next) => {
   try {
     const rows = await db.listUsers();
     res.json({ users: rows.map(toPublicUser) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// PATCH /api/admin/users/:id/password  { newPassword }
+// Sert de "mot de passe oublié" : sans service d'envoi d'email configuré,
+// c'est l'admin qui fixe un nouveau mot de passe pour un compte bloqué,
+// à communiquer ensuite au joueur par un autre moyen (message, en personne...).
+router.patch("/users/:id/password", async (req, res, next) => {
+  try {
+    const target = await db.getUserById(req.params.id);
+    if (!target) return res.status(404).json({ error: "Compte introuvable." });
+
+    const { newPassword } = req.body || {};
+    if (!newPassword || String(newPassword).length < 6) {
+      return res.status(400).json({ error: "Le nouveau mot de passe doit faire au moins 6 caractères." });
+    }
+
+    await db.updateUser(req.params.id, { password_hash: hashPassword(newPassword) });
+    res.json({ ok: true });
   } catch (e) {
     next(e);
   }

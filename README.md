@@ -95,16 +95,21 @@ curl http://localhost:4000/api/admin/users -H "Authorization: Bearer TOKEN_ADMIN
 | POST    | `/api/auth/login`             | public            | Se connecter |
 | GET     | `/api/auth/me`                | connecté          | Profil actuel |
 | PATCH   | `/api/users/me`                | connecté          | Modifier email / photo (PNG en base64) |
+| PATCH   | `/api/users/me/password`       | connecté          | Changer son mot de passe (avec l'actuel) |
+| DELETE  | `/api/users/me`                | connecté          | Supprimer définitivement son propre compte |
 | PATCH   | `/api/users/me/game`           | connecté          | Synchroniser gemmes / vies / série / inventaire |
 | POST    | `/api/users/me/subscribe`      | connecté          | Activer un palier d'abonnement (⚠️ démo, sans paiement réel) |
+| POST    | `/api/users/me/history`        | connecté          | Ajouter une entrée à l'historique de parties |
+| GET/PUT | `/api/users/me/playlists`      | connecté          | Lire/remplacer ses parcours |
 | GET     | `/api/quizzes`                 | public (optionnel)| Liste des quiz (les `premiumOnly` sont verrouillés si non-Premium) |
 | GET     | `/api/quizzes/:id`              | public (optionnel)| Détail d'un quiz |
 | POST    | `/api/quizzes`                  | connecté          | Publier un quiz |
-| PUT     | `/api/quizzes/:id`               | propriétaire/admin| Modifier un quiz |
+| PUT     | `/api/quizzes/:id`               | propriétaire/admin| Modifier un quiz (met à jour, ne duplique pas) |
 | DELETE  | `/api/quizzes/:id`               | propriétaire/admin| Supprimer un quiz |
 | GET     | `/api/leaderboard?limit=20`      | public            | Classement des joueurs par score cumulé |
 | GET     | `/api/admin/users`               | **admin**         | Lister tous les comptes |
 | PATCH   | `/api/admin/users/:id`            | **admin**         | Changer rôle / abonnement / gemmes / bannir |
+| PATCH   | `/api/admin/users/:id/password`   | **admin**         | Réinitialiser le mot de passe d'un compte ("mot de passe oublié") |
 | DELETE  | `/api/admin/users/:id`            | **admin**         | Supprimer un compte |
 | GET     | `/api/admin/quizzes`              | **admin**         | Tous les quiz, y compris Premium |
 | PATCH   | `/api/admin/quizzes/:id`           | **admin**         | Marquer un quiz Premium ou non |

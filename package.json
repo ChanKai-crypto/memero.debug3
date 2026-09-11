@@ -1,23 +1,22 @@
 {
   "name": "memero-backend",
   "version": "1.0.0",
-  "description": "Backend Memero : comptes (avec abonnement), compte administrateur, et quiz.",
-  "main": "src/server.js",
-  "type": "commonjs",
+  "private": true,
+  "description": "Backend API pour l'app Memero (comptes, quiz communautaires, progression, administration).",
+  "main": "server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
-    "seed:admin": "node scripts/seedAdmin.js"
+    "start": "node server.js",
+    "dev": "node server.js",
+    "seed-admin": "node scripts/seedAdmin.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.4",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2"
-  },
-  "engines": {
-    "node": ">=18"
   }
 }

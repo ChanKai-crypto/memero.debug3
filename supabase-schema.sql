@@ -1,66 +1,41 @@
 -- ============================================================
--- Schéma Memero pour Supabase.
--- À exécuter une seule fois : Supabase → SQL Editor → colle tout
--- ce fichier → Run.
+-- Schema Supabase (Postgres) pour le backend Memerro.
+-- A executer une seule fois : Supabase -> SQL Editor -> New query ->
+-- coller ce fichier entier -> Run.
+-- Sans danger de le relancer plus tard (tout est en IF NOT EXISTS) :
+-- ca ne touchera jamais aux donnees deja presentes.
 -- ============================================================
 
-create extension if not exists "pgcrypto";
+create extension if not exists pgcrypto;
 
--- ---------------------------- Comptes ----------------------------
 create table if not exists users (
   id uuid primary key default gen_random_uuid(),
   username text not null unique,
   email text,
   password_hash text not null,
-  role text not null default 'user' check (role in ('user', 'admin')),
-  created_at timestamptz not null default now(),
+  role text not null default 'user',
   avatar_url text,
   banned boolean not null default false,
-  subscription jsonb not null default '{
-    "tier": "free",
-    "status": "inactive",
-    "startedAt": null,
-    "renewsAt": null,
-    "provider": null,
-    "providerTransactionId": null
-  }'::jsonb,
-  game jsonb not null default '{
-    "gems": 0,
-    "lives": {"count": 6, "lastLossAt": null},
-    "streak": {"count": 0, "lastPlayAt": null},
-    "lifetimeScore": 0,
-    "inventory": {"multiplier": 0, "joker": 0},
-    "chestsUnlocked": [],
-    "chestsPending": []
-  }'::jsonb,
+  subscription jsonb not null default '{"tier":"free","status":"active","startedAt":null,"renewsAt":null,"provider":null,"providerTransactionId":null}'::jsonb,
+  game jsonb not null default '{"gems":0,"lives":{"count":6,"lastLossAt":null},"streak":{"count":0,"lastPlayAt":null},"lifetimeScore":0,"inventory":{"multiplier":0,"joker":0},"chestsUnlocked":[],"chestsPending":[]}'::jsonb,
   stats jsonb not null default '{"quizzesPlayed": 0}'::jsonb,
   history jsonb not null default '[]'::jsonb,
   playlists jsonb not null default '[]'::jsonb,
   stripe_customer_id text,
-  stripe_subscription_id text
+  stripe_subscription_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
--- Si la table "users" existait déjà (créée avant l'ajout de l'historique et
--- des parcours), ces lignes ajoutent juste les colonnes manquantes sans
--- rien casser. Sans danger de les relancer même si les colonnes existent déjà.
-alter table users add column if not exists history jsonb not null default '[]'::jsonb;
-alter table users add column if not exists playlists jsonb not null default '[]'::jsonb;
-alter table users add column if not exists stripe_customer_id text;
-alter table users add column if not exists stripe_subscription_id text;
-
-create index if not exists users_username_lower_idx on users (lower(username));
-create index if not exists users_stripe_customer_idx on users (stripe_customer_id);
-
--- ----------------------------- Quiz ------------------------------
 create table if not exists quizzes (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid references users(id) on delete set null,
   owner_username text,
-  title text not null,
-  difficulty text default 'normal',
-  format text default 'pairs',
-  raw text not null,
-  config jsonb not null default '{}'::jsonb,
+  title text,
+  difficulty text,
+  format text,
+  raw text,
+  config jsonb,
   language text,
   premium_only boolean not null default false,
   official boolean not null default false,
@@ -68,17 +43,14 @@ create table if not exists quizzes (
   updated_at timestamptz not null default now()
 );
 
--- Si la table "quizzes" existait déjà (créée avant l'ajout des quiz "officiels"),
--- cette ligne ajoute juste la colonne manquante sans rien casser. Sans danger
--- de la relancer même si la colonne existe déjà.
+-- Colonnes ajoutees apres la creation initiale : sans danger a relancer
+-- meme si elles existent deja.
+alter table users add column if not exists history jsonb not null default '[]'::jsonb;
+alter table users add column if not exists playlists jsonb not null default '[]'::jsonb;
+alter table users add column if not exists stripe_customer_id text;
+alter table users add column if not exists stripe_subscription_id text;
 alter table quizzes add column if not exists official boolean not null default false;
 
+create index if not exists users_username_lower_idx on users (lower(username));
+create index if not exists users_stripe_customer_idx on users (stripe_customer_id);
 create index if not exists quizzes_owner_idx on quizzes (owner_id);
-create index if not exists quizzes_premium_idx on quizzes (premium_only);
-create index if not exists quizzes_official_idx on quizzes (official);
-
--- Important : la "service role key" utilisée par le backend contourne RLS
--- de toute façon, mais on active RLS par bonnes pratiques (empêche tout
--- accès direct depuis le navigateur avec une clé publique, si jamais).
-alter table users enable row level security;
-alter table quizzes enable row level security;

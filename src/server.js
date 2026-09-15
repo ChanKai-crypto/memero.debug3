@@ -13,14 +13,11 @@ const playlistsRoutes = require("./routes/playlists.routes");
 const app = express();
 
 const corsOrigin = process.env.CORS_ORIGIN || "*";
-const corsOptions = {
-  origin: corsOrigin === "*" ? true : corsOrigin.split(",").map((s) => s.trim()),
-  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-};
-
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
+app.use(
+  cors({
+    origin: corsOrigin === "*" ? true : corsOrigin.split(",").map((s) => s.trim()),
+  })
+);
 
 // ⚠️ Le webhook Stripe a besoin du corps BRUT (non parsé en JSON) pour
 // vérifier la signature d'authenticité — il doit donc être monté AVANT le

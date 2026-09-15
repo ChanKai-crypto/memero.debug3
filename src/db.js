@@ -1,39 +1,23 @@
 /**
- * Couche d'accès aux données, branchée sur Supabase (Postgres géré, gratuit
- * en continu dans ses limites — contrairement au disque de Render qui,
- * lui, nécessite un plan payant).
- *
- * Toutes les fonctions sont asynchrones (elles font un vrai appel réseau).
- * Elles utilisent la "service role key" de Supabase, qui contourne les
- * règles de sécurité au niveau des lignes (RLS) : c'est volontaire, car
- * c'est CE serveur qui doit décider seul qui a le droit de faire quoi
- * (voir les middlewares authenticate / requireAdmin). Cette clé ne doit
- * JAMAIS être envoyée au navigateur/à l'app — uniquement utilisée ici,
- * côté serveur.
- *
- * Avant de t'en servir : crée les tables avec le script
- * `supabase-schema.sql` fourni à la racine du projet (Supabase → SQL
- * Editor → colle le contenu → Run), puis renseigne SUPABASE_URL et
- * SUPABASE_SERVICE_ROLE_KEY dans ton .env / tes variables Render.
+ * Couche d'acces aux donnees, branchee sur Supabase (Postgres).
+ * Toutes les fonctions gardent la meme signature que la version MySQL :
+ * aucun fichier de routes n'a besoin de changer si on rebascule un jour.
  */
 const { createClient } = require("@supabase/supabase-js");
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error(
-    "❌ SUPABASE_URL et SUPABASE_SERVICE_ROLE_KEY doivent être définies (voir .env.example)."
-  );
-}
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  console.error(
+    "\u274c SUPABASE_URL et SUPABASE_SERVICE_ROLE_KEY doivent etre definies (voir .env.example)."
+  );
+}
+
 function throwIfError(error, context) {
   if (error) {
-    const err = new Error(`[supabase] ${context} : ${error.message}`);
+    const err = new Error(`[${context}] ${error.message}`);
     err.cause = error;
     throw err;
   }
@@ -48,11 +32,7 @@ async function getUserById(id) {
 }
 
 async function getUserByUsername(username) {
-  const { data, error } = await supabase
-    .from("users")
-    .select("*")
-    .ilike("username", username)
-    .maybeSingle();
+  const { data, error } = await supabase.from("users").select("*").ilike("username", username).maybeSingle();
   throwIfError(error, "getUserByUsername");
   return data;
 }
@@ -63,14 +43,8 @@ async function createUser(user) {
   return data;
 }
 
-/** patch = objet partiel des colonnes à mettre à jour */
 async function updateUser(id, patch) {
-  const { data, error } = await supabase
-    .from("users")
-    .update(patch)
-    .eq("id", id)
-    .select()
-    .single();
+  const { data, error } = await supabase.from("users").update(patch).eq("id", id).select().single();
   throwIfError(error, "updateUser");
   return data;
 }
@@ -81,10 +55,7 @@ async function deleteUser(id) {
 }
 
 async function listUsers() {
-  const { data, error } = await supabase
-    .from("users")
-    .select("*")
-    .order("created_at", { ascending: true });
+  const { data, error } = await supabase.from("users").select("*").order("created_at", { ascending: true });
   throwIfError(error, "listUsers");
   return data;
 }
@@ -99,12 +70,8 @@ async function getUserByStripeCustomerId(customerId) {
   return data;
 }
 
-/** Classement des joueurs par score cumulé (game.lifetimeScore). */
 async function listLeaderboard(limit) {
-  const { data, error } = await supabase
-    .from("users")
-    .select("username, avatar_url, game")
-    .limit(1000);
+  const { data, error } = await supabase.from("users").select("username, avatar_url, game").limit(1000);
   throwIfError(error, "listLeaderboard");
   return (data || [])
     .map((u) => ({
@@ -116,12 +83,6 @@ async function listLeaderboard(limit) {
     .slice(0, limit || 20);
 }
 
-/**
- * Meilleurs scores individuels sur des quiz officiels, tous joueurs
- * confondus. S'appuie sur l'historique de parties déjà poussé par chaque
- * compte (POST /api/users/me/history), chaque entrée étant elle-même déjà
- * marquée "officiel" ou non au moment où elle a été jouée.
- */
 async function listOfficialScores(limit) {
   const { data, error } = await supabase.from("users").select("username, history").limit(1000);
   throwIfError(error, "listOfficialScores");
@@ -141,13 +102,7 @@ async function listOfficialScores(limit) {
   });
   return out.sort((a, b) => b.score - a.score).slice(0, limit || 50);
 }
-/**
- * Tous les parcours (playlists) marqués publics, tous comptes confondus.
- * Chaque compte garde ses parcours dans sa propre colonne `playlists` (déjà
- * gérée par PATCH /api/users/me/playlists) ; cette fonction se contente de
- * les rassembler et d'écarter ceux marqués `private: true`, pour construire
- * un annuaire public consultable même sans être connecté.
- */
+
 async function listPublicPlaylists() {
   const { data, error } = await supabase.from("users").select("username, playlists").limit(1000);
   throwIfError(error, "listPublicPlaylists");
@@ -175,12 +130,7 @@ async function createQuiz(quiz) {
 }
 
 async function updateQuiz(id, patch) {
-  const { data, error } = await supabase
-    .from("quizzes")
-    .update(patch)
-    .eq("id", id)
-    .select()
-    .single();
+  const { data, error } = await supabase.from("quizzes").update(patch).eq("id", id).select().single();
   throwIfError(error, "updateQuiz");
   return data;
 }
@@ -191,10 +141,7 @@ async function deleteQuiz(id) {
 }
 
 async function listQuizzes() {
-  const { data, error } = await supabase
-    .from("quizzes")
-    .select("*")
-    .order("created_at", { ascending: false });
+  const { data, error } = await supabase.from("quizzes").select("*").order("created_at", { ascending: false });
   throwIfError(error, "listQuizzes");
   return data;
 }

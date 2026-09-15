@@ -89,6 +89,16 @@ async function listUsers() {
   return data;
 }
 
+async function getUserByStripeCustomerId(customerId) {
+  const { data, error } = await supabase
+    .from("users")
+    .select("*")
+    .eq("stripe_customer_id", customerId)
+    .maybeSingle();
+  throwIfError(error, "getUserByStripeCustomerId");
+  return data;
+}
+
 /** Classement des joueurs par score cumulé (game.lifetimeScore). */
 async function listLeaderboard(limit) {
   const { data, error } = await supabase
@@ -104,6 +114,50 @@ async function listLeaderboard(limit) {
     }))
     .sort((a, b) => b.lifetimeScore - a.lifetimeScore)
     .slice(0, limit || 20);
+}
+
+/**
+ * Meilleurs scores individuels sur des quiz officiels, tous joueurs
+ * confondus. S'appuie sur l'historique de parties déjà poussé par chaque
+ * compte (POST /api/users/me/history), chaque entrée étant elle-même déjà
+ * marquée "officiel" ou non au moment où elle a été jouée.
+ */
+async function listOfficialScores(limit) {
+  const { data, error } = await supabase.from("users").select("username, history").limit(1000);
+  throwIfError(error, "listOfficialScores");
+  const out = [];
+  (data || []).forEach((u) => {
+    (Array.isArray(u.history) ? u.history : []).forEach((h) => {
+      if (h && h.official && Number.isFinite(h.score) && h.score > 0) {
+        out.push({
+          username: u.username,
+          quizTitle: h.title || "Quiz",
+          quizId: h.id || null,
+          score: h.score,
+          date: h.date || null,
+        });
+      }
+    });
+  });
+  return out.sort((a, b) => b.score - a.score).slice(0, limit || 50);
+}
+/**
+ * Tous les parcours (playlists) marqués publics, tous comptes confondus.
+ * Chaque compte garde ses parcours dans sa propre colonne `playlists` (déjà
+ * gérée par PATCH /api/users/me/playlists) ; cette fonction se contente de
+ * les rassembler et d'écarter ceux marqués `private: true`, pour construire
+ * un annuaire public consultable même sans être connecté.
+ */
+async function listPublicPlaylists() {
+  const { data, error } = await supabase.from("users").select("username, playlists").limit(1000);
+  throwIfError(error, "listPublicPlaylists");
+  const out = [];
+  (data || []).forEach((u) => {
+    (Array.isArray(u.playlists) ? u.playlists : []).forEach((p) => {
+      if (p && !p.private) out.push({ ...p, owner: p.owner || u.username });
+    });
+  });
+  return out.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
 /* ---------------------------------- Quiz ------------------------------------ */
@@ -153,7 +207,10 @@ module.exports = {
   updateUser,
   deleteUser,
   listUsers,
+  getUserByStripeCustomerId,
   listLeaderboard,
+  listOfficialScores,
+  listPublicPlaylists,
   getQuizById,
   createQuiz,
   updateQuiz,

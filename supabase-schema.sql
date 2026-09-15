@@ -35,16 +35,21 @@ create table if not exists users (
   }'::jsonb,
   stats jsonb not null default '{"quizzesPlayed": 0}'::jsonb,
   history jsonb not null default '[]'::jsonb,
-  playlists jsonb not null default '[]'::jsonb
+  playlists jsonb not null default '[]'::jsonb,
+  stripe_customer_id text,
+  stripe_subscription_id text
 );
 
 -- Si la table "users" existait déjà (créée avant l'ajout de l'historique et
--- des parcours), ces deux lignes ajoutent juste les colonnes manquantes sans
+-- des parcours), ces lignes ajoutent juste les colonnes manquantes sans
 -- rien casser. Sans danger de les relancer même si les colonnes existent déjà.
 alter table users add column if not exists history jsonb not null default '[]'::jsonb;
 alter table users add column if not exists playlists jsonb not null default '[]'::jsonb;
+alter table users add column if not exists stripe_customer_id text;
+alter table users add column if not exists stripe_subscription_id text;
 
 create index if not exists users_username_lower_idx on users (lower(username));
+create index if not exists users_stripe_customer_idx on users (stripe_customer_id);
 
 -- ----------------------------- Quiz ------------------------------
 create table if not exists quizzes (

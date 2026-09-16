@@ -51,6 +51,15 @@ alter table users add column if not exists stripe_customer_id text;
 alter table users add column if not exists stripe_subscription_id text;
 alter table quizzes add column if not exists official boolean not null default false;
 
+-- Verification d'email : ajoutees pour le flux "verifie ton email" du front.
+alter table users add column if not exists email_verified boolean not null default false;
+alter table users add column if not exists email_verification_code text;
+alter table users add column if not exists email_verification_expires_at timestamptz;
+alter table users add column if not exists email_verification_last_sent_at timestamptz;
+
+-- Langue d'explication du quiz (distincte de la langue principale "language").
+alter table quizzes add column if not exists instruction_language text;
+
 create index if not exists users_username_lower_idx on users (lower(username));
 create index if not exists users_stripe_customer_idx on users (stripe_customer_id);
 create index if not exists quizzes_owner_idx on quizzes (owner_id);

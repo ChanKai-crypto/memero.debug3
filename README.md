@@ -62,17 +62,44 @@ d'inactivité : le premier appel après une pause peut prendre 30-50 secondes
 le temps qu'il se réveille — c'est normal, pas une panne.
 
 ### Brancher ton app Memerro (le fichier HTML) sur ce backend
-Ouvre l'app → **Compte** → **⚙ Paramètres du compte** → section **Serveur**,
-et renseigne l'adresse Render (ex. `https://ton-service.onrender.com`).
+Deux façons de faire, et il te faut la première pour que **tout le monde**
+(pas seulement toi) voie le contenu partagé :
 
-## 4. Routes disponibles
+1. **Pour tous les visiteurs (obligatoire)** : ouvre `index.html`, cherche
+   `DEFAULT_BACKEND_URL` (juste avant `seedDefaultBackendUrl`), et remplace
+   la valeur par l'adresse Render de ton service (ex.
+   `https://ton-service.onrender.com`), puis redéploie sur Netlify. C'est ce
+   qui est mis automatiquement dans le stockage local de chaque nouveau
+   visiteur — sans ça, Découvrir restera vide pour tout le monde sauf toi.
+2. **Juste pour toi, en test** (ou pour pointer vers un autre serveur sans
+   retoucher au HTML) : ouvre l'app → **Compte** → **⚙ Paramètres du
+   compte** → section **Serveur** (visible seulement une fois connecté en
+   admin), et renseigne l'adresse Render. Ce réglage est propre à ton
+   navigateur : il ne change rien pour les autres visiteurs.
+
+## 4. Déployer le frontend (le fichier HTML) sur Netlify
+
+1. Après avoir mis à jour `DEFAULT_BACKEND_URL` (étape ci-dessus), va sur
+   [netlify.com](https://netlify.com) → **Add new site** → **Deploy manually**,
+   puis glisse-dépose simplement `index.html` (Netlify accepte un fichier
+   unique aussi bien qu'un dossier).
+2. Une fois en ligne, note l'adresse Netlify (ex. `https://ton-site.netlify.app`)
+   et renseigne-la dans `FRONTEND_URL` côté backend (Render → Environment) —
+   c'est là que Stripe renvoie le joueur après un paiement.
+3. Mets aussi cette même adresse dans `CORS_ORIGIN` côté backend (au lieu de
+   `*`) une fois que tout fonctionne, pour que seul ton site puisse appeler
+   l'API depuis un navigateur.
+
+## 5. Routes disponibles
 
 | Méthode | Route                        | Rôle requis      | Description |
 |---------|-------------------------------|-------------------|--------------|
-| POST    | `/api/auth/signup`            | public            | Créer un compte |
+| POST    | `/api/auth/signup`            | public            | Créer un compte (envoie un code de vérification si un email est fourni) |
 | POST    | `/api/auth/login`             | public            | Se connecter |
 | GET     | `/api/auth/me`                | connecté          | Profil actuel |
-| PATCH   | `/api/users/me`                | connecté          | Modifier email / photo (PNG en base64) |
+| POST    | `/api/auth/resend-verification` | connecté        | Renvoie un nouveau code de vérification par email |
+| POST    | `/api/auth/verify-email`      | connecté          | Valide le code et confirme l'adresse email |
+| PATCH   | `/api/users/me`                | connecté          | Modifier email / photo (PNG en base64) — changer d'email redemande une vérification |
 | PATCH   | `/api/users/me/password`       | connecté          | Changer son mot de passe (avec l'actuel) |
 | DELETE  | `/api/users/me`                | connecté          | Supprimer définitivement son propre compte |
 | PATCH   | `/api/users/me/game`           | connecté          | Synchroniser gemmes / vies / série / inventaire |
@@ -97,7 +124,7 @@ et renseigne l'adresse Render (ex. `https://ton-service.onrender.com`).
 | POST    | `/api/billing/portal`             | connecté          | Ouvre le portail Stripe (facture, carte, résiliation) |
 | POST    | `/api/billing/webhook`            | Stripe uniquement | Confirme le paiement et active l'abonnement (jamais appelé par l'app) |
 
-## 5. Stripe (paiement réel des abonnements)
+## 6. Stripe (paiement réel des abonnements)
 
 1. Crée un compte sur [stripe.com](https://stripe.com) (mode **Test** pour essayer sans vrai argent).
 2. **Developers → API keys** → copie la **Secret key** dans `STRIPE_SECRET_KEY`.
@@ -109,9 +136,29 @@ et renseigne l'adresse Render (ex. `https://ton-service.onrender.com`).
    `customer.subscription.deleted`. Copie le **Signing secret** dans `STRIPE_WEBHOOK_SECRET`.
 5. Renseigne `FRONTEND_URL` (l'adresse de ton site) — Stripe y renvoie le joueur après paiement.
 
-## 6. Sécurité et bonnes pratiques
+## 7. Sécurité et bonnes pratiques
 
 - La clé `SUPABASE_SERVICE_ROLE_KEY` donne un accès total à la base : ne la
   mets jamais dans le frontend ni dans un dépôt public.
 - Ajoute un limiteur de requêtes (`express-rate-limit`) sur `/api/auth/*`
   si le site devient public, pour limiter les tentatives de connexion en force brute.
+
+## 8. Vérification d'email (Resend)
+
+À l'inscription (si un email est fourni), un code à 6 chiffres est généré et
+envoyé, et le front ouvre automatiquement l'écran "Vérifie ton email".
+
+- **Sans configuration** : le code n'est pas envoyé par email, seulement
+  affiché dans les logs du serveur (Render → onglet **Logs**) — pratique
+  pour tester le flux sans compte email tiers.
+- **Pour un vrai envoi** : crée un compte gratuit sur
+  [resend.com](https://resend.com) (3000 emails/mois gratuits, aucune carte
+  bancaire), **API Keys → Create API Key**, colle la clé dans
+  `RESEND_API_KEY` (Render → Environment). Garde `EMAIL_FROM` tel quel
+  (`onboarding@resend.dev`) tant que tu n'as pas connecté ton propre nom de
+  domaine sur Resend — sinon les emails partiront de ton adresse une fois le
+  domaine vérifié côté Resend.
+- Le code expire au bout de 15 minutes ; le bouton "Renvoyer" est limité à
+  un envoi toutes les 30 secondes (protection anti-spam côté serveur, en plus
+  du délai déjà affiché côté app).
+

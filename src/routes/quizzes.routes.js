@@ -55,7 +55,8 @@ router.get("/:id", authenticate(false), async (req, res, next) => {
 // POST /api/quizzes
 router.post("/", authenticate(true), async (req, res, next) => {
   try {
-    const { title, difficulty, format, raw, config, language, premiumOnly, official } = req.body || {};
+const { title, difficulty, format, raw, config, language, instructionLanguage, premiumOnly, official } =
+      req.body || {};
 
     if (!title || !raw) {
       return res.status(400).json({ error: "Titre et contenu du quiz requis." });
@@ -76,6 +77,7 @@ router.post("/", authenticate(true), async (req, res, next) => {
       raw: String(raw),
       config: config || {},
       language: language || null,
+      instruction_language: instructionLanguage || language || null,
       premium_only: !!premiumOnly,
       official: !!official,
     });
@@ -93,7 +95,8 @@ router.put("/:id", authenticate(true), async (req, res, next) => {
     if (!existing) return res.status(404).json({ error: "Quiz introuvable." });
     if (!canEdit(req.user, existing)) return res.status(403).json({ error: "Non autorisé." });
 
-    const { title, difficulty, format, raw, config, language, premiumOnly, official } = req.body || {};
+    const { title, difficulty, format, raw, config, language, instructionLanguage, premiumOnly, official } =
+      req.body || {};
     const patch = { updated_at: new Date().toISOString() };
     if (title) patch.title = String(title).slice(0, 200);
     if (difficulty) patch.difficulty = difficulty;
@@ -101,6 +104,7 @@ router.put("/:id", authenticate(true), async (req, res, next) => {
     if (typeof raw === "string") patch.raw = raw;
     if (config) patch.config = config;
     if (language !== undefined) patch.language = language;
+    if (instructionLanguage !== undefined) patch.instruction_language = instructionLanguage;
     if (typeof premiumOnly === "boolean") {
       if (premiumOnly && req.user.role !== "admin") {
         return res.status(403).json({ error: "Seul un administrateur peut marquer un quiz Premium." });

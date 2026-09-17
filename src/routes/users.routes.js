@@ -3,6 +3,7 @@ const db = require("../db");
 const authenticate = require("../middleware/authenticate");
 const { toPublicUser } = require("../utils/mappers");
 const { hashPassword, verifyPassword } = require("../utils/auth");
+const { sendVerificationEmail, generateCode } = require("../utils/email");
 
 const router = express.Router();
 
@@ -16,10 +17,37 @@ router.get("/me", authenticate(true), (req, res) => {
 // PATCH /api/users/me  { email?, avatarUrl? }
 router.patch("/me", authenticate(true), async (req, res, next) => {
   try {
-    const { email, avatarUrl } = req.body || {};
+const { email, avatarUrl } = req.body || {};
     const patch = {};
+    let devCode;
 
-    if (typeof email === "string") patch.email = email;
+    if (typeof email === "string") {
+      const trimmed = email.trim();
+      // Changer d'adresse (ou en retirer une) invalide la vérification en
+      // cours : une nouvelle adresse n'a jamais été prouvée. Un nouveau code
+      // est envoyé tout de suite si l'adresse n'est pas vide.
+      if (trimmed !== (req.user.email || "")) {
+        if (trimmed) {
+          const existingEmail = await db.getUserByEmail(trimmed);
+          if (existingEmail && existingEmail.id !== req.user.id) {
+            return res.status(409).json({ error: "Cette adresse email est déjà utilisée par un autre compte." });
+          }
+        }
+        patch.email = trimmed || null;
+        patch.email_verified = false;
+        if (trimmed) {
+          const code = generateCode();
+          patch.email_verification_code = code;
+          patch.email_verification_expires_at = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+          patch.email_verification_last_sent_at = new Date().toISOString();
+          const result = await sendVerificationEmail(trimmed, code);
+          if (!result.sent) devCode = result.devCode;
+        } else {
+          patch.email_verification_code = null;
+          patch.email_verification_expires_at = null;
+        }
+      }
+    }
     if (typeof avatarUrl === "string") {
       if (avatarUrl.length > 3_000_000) {
         return res.status(413).json({ error: "Image trop lourde (max ~2 Mo)." });
@@ -31,7 +59,7 @@ router.patch("/me", authenticate(true), async (req, res, next) => {
     }
 
     const row = await db.updateUser(req.user.id, patch);
-    res.json({ user: toPublicUser(row) });
+    res.json({ user: toPublicUser(row), devCode });
   } catch (e) {
     next(e);
   }

@@ -37,6 +37,12 @@ async function getUserByUsername(username) {
   return data;
 }
 
+async function getUserByEmail(email) {
+  const { data, error } = await supabase.from("users").select("*").ilike("email", email).maybeSingle();
+  throwIfError(error, "getUserByEmail");
+  return data;
+}
+
 async function createUser(user) {
   const { data, error } = await supabase.from("users").insert(user).select().single();
   throwIfError(error, "createUser");
@@ -150,6 +156,7 @@ module.exports = {
   supabase,
   getUserById,
   getUserByUsername,
+  getUserByEmail,
   createUser,
   updateUser,
   deleteUser,

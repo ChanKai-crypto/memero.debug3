@@ -22,6 +22,24 @@ paiement via un webhook signé, jamais sur simple requête du navigateur.
    - **Project URL** → `SUPABASE_URL`
    - **service_role** (clique "Reveal") → `SUPABASE_SERVICE_ROLE_KEY` (⚠️ secret, ne jamais l'exposer côté client)
 
+### Tu as déjà un projet Supabase existant ?
+Redéployer le code du backend (Render) ne modifie **jamais** ta base de
+données toute seule — SQL et code sont deux choses séparées. Si tu avais
+déjà lancé `supabase-schema.sql` avant, il te manque probablement les
+colonnes ajoutées depuis (ex. `instruction_language`, `email_verified`...).
+Lance **`migration-2026-09.sql`** (fourni dans ce dossier) de la même façon :
+SQL Editor → New query → colle tout → Run. Il est 100% sans danger à
+relancer, même plusieurs fois, et se termine par une requête qui te montre
+la liste de toutes les colonnes pour que tu puisses confirmer que tout y
+est (regarde `instruction_language` dans le résultat, tout en bas de l'écran
+après avoir cliqué Run).
+
+⚠️ Si tu vois encore une erreur "column does not exist" juste après avoir
+lancé la migration : Supabase met parfois quelques secondes à rafraîchir son
+cache d'API après un changement de structure. Va dans **Project Settings →
+API** et clique **Reload schema cache** (ou attends 1-2 minutes puis
+réessaie) avant de conclure que ça n'a pas marché.
+
 ## 2. Installation en local (optionnel, pour tester avant de déployer)
 
 ```bash
@@ -148,9 +166,11 @@ Deux façons de faire, et il te faut la première pour que **tout le monde**
 À l'inscription (si un email est fourni), un code à 6 chiffres est généré et
 envoyé, et le front ouvre automatiquement l'écran "Vérifie ton email".
 
-- **Sans configuration** : le code n'est pas envoyé par email, seulement
-  affiché dans les logs du serveur (Render → onglet **Logs**) — pratique
-  pour tester le flux sans compte email tiers.
+- **Sans configuration** : le code n'est pas envoyé par email — il est
+  affiché **directement dans l'app** (dans l'écran "Vérifie ton email", en
+  plus d'être visible dans les logs du serveur sur Render → onglet **Logs**)
+  — pratique pour tester le flux sans compte email tiers, sans quoi personne
+  ne pourrait jamais terminer la vérification.
 - **Pour un vrai envoi** : crée un compte gratuit sur
   [resend.com](https://resend.com) (3000 emails/mois gratuits, aucune carte
   bancaire), **API Keys → Create API Key**, colle la clé dans

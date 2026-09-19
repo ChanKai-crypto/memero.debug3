@@ -43,6 +43,12 @@ router.post("/checkout", authenticate(true), async (req, res, next) => {
       },
       success_url: `${frontendUrl()}/?checkout=success`,
       cancel_url: `${frontendUrl()}/?checkout=cancel`,
+      // "Managed Payments" (Stripe) exige un code de taxe par produit, ce
+      // qu'on ne gère pas ici — on le désactive pour cette session, comme
+      // suggéré par Stripe lui-même en cas d'erreur "product tax code is
+      // missing". À retirer si un jour la taxation est configurée dans le
+      // dashboard Stripe (Settings > Tax).
+      managed_payments: { enabled: false },
     });
 
     res.json({ url: session.url });

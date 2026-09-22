@@ -161,24 +161,52 @@ Deux façons de faire, et il te faut la première pour que **tout le monde**
 - Ajoute un limiteur de requêtes (`express-rate-limit`) sur `/api/auth/*`
   si le site devient public, pour limiter les tentatives de connexion en force brute.
 
-## 8. Vérification d'email (Resend)
+## 8. Vérification d'email (Gmail ou Resend)
 
 À l'inscription (si un email est fourni), un code à 6 chiffres est généré et
-envoyé, et le front ouvre automatiquement l'écran "Vérifie ton email".
+envoyé par email, et le front ouvre automatiquement l'écran "Vérifie ton
+email". **Le code n'est jamais affiché dans l'app** : il doit arriver
+uniquement par email, donc l'une des deux options ci-dessous doit être
+configurée pour que la vérification soit utilisable par les personnes qui
+donnent leur email.
 
-- **Sans configuration** : le code n'est pas envoyé par email — il est
-  affiché **directement dans l'app** (dans l'écran "Vérifie ton email", en
-  plus d'être visible dans les logs du serveur sur Render → onglet **Logs**)
-  — pratique pour tester le flux sans compte email tiers, sans quoi personne
-  ne pourrait jamais terminer la vérification.
-- **Pour un vrai envoi** : crée un compte gratuit sur
-  [resend.com](https://resend.com) (3000 emails/mois gratuits, aucune carte
-  bancaire), **API Keys → Create API Key**, colle la clé dans
-  `RESEND_API_KEY` (Render → Environment). Garde `EMAIL_FROM` tel quel
-  (`onboarding@resend.dev`) tant que tu n'as pas connecté ton propre nom de
-  domaine sur Resend — sinon les emails partiront de ton adresse une fois le
-  domaine vérifié côté Resend.
+### Option A — Gmail (recommandée, utilisée par défaut ici)
+
+1. Utilise (ou crée) un compte Gmail dédié à l'envoi, par ex. `memerro65@gmail.com`.
+2. Active la **validation en 2 étapes** sur ce compte si ce n'est pas déjà
+   fait : [myaccount.google.com/security](https://myaccount.google.com/security).
+3. Génère un **mot de passe d'application** (différent du mot de passe
+   normal du compte) : [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
+   → choisis un nom (ex. "Memerro backend") → **Générer** → copie le code à
+   16 caractères affiché (sans les espaces).
+4. Sur Render → ton service → **Environment**, ajoute :
+   - `GMAIL_USER` = l'adresse Gmail (ex. `memerro65@gmail.com`)
+   - `GMAIL_APP_PASSWORD` = le mot de passe d'application généré à l'étape 3
+5. Redéploie (Manual Deploy).
+
+Limite du compte Gmail gratuit : **500 emails/jour** — largement suffisant
+pour démarrer, à surveiller si le site grossit beaucoup.
+
+### Option B — Resend (si tu préfères un service dédié)
+
+Ignorée automatiquement si `GMAIL_USER` est déjà configurée.
+
+1. Crée un compte gratuit sur [resend.com](https://resend.com) (3000
+   emails/mois gratuits, aucune carte bancaire).
+2. **API Keys → Create API Key**, colle la clé dans `RESEND_API_KEY`
+   (Render → Environment).
+3. Garde `EMAIL_FROM` tel quel (`onboarding@resend.dev`) tant que tu n'as
+   pas connecté ton propre nom de domaine sur Resend.
+
+### Dans les deux cas
+
+- Sans **aucune** des deux options configurées, l'email n'est pas envoyé et
+  le code reste visible uniquement dans les logs du serveur (Render →
+  **Logs**) — un repli de secours pour le développement, pas pour de vrais
+  utilisateurs.
 - Le code expire au bout de 15 minutes ; le bouton "Renvoyer" est limité à
   un envoi toutes les 30 secondes (protection anti-spam côté serveur, en plus
   du délai déjà affiché côté app).
+- Renseigner un email reste **facultatif** à l'inscription : un compte sans
+  email fonctionne normalement, simplement sans étape de vérification.
 

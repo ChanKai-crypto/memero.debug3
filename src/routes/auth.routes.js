@@ -72,24 +72,21 @@ const existing = await db.getUserByUsername(username);
     // Si une adresse email est fournie, on génère tout de suite un code de
     // vérification et on l'envoie — le front ouvre l'écran "Vérifie ton
     // email" juste après l'inscription (voir emailVerified:false ci-dessous).
-    // On attend l'envoi (au lieu d'un fire-and-forget) pour pouvoir renvoyer
-    // devCode dans la réponse si aucun service d'email n'est configuré :
-    // sans ça, sans RESEND_API_KEY, personne ne peut jamais obtenir son
-    // code autrement qu'en allant fouiller les logs du serveur.
-    let devCode;
+    // Le code n'est jamais renvoyé au front : il doit arriver uniquement
+    // par email (voir sendVerificationEmail, qui journalise en interne
+    // côté serveur si l'envoi échoue, sans jamais exposer le code au client).
     if (hasEmail) {
       const code = generateCode();
       userPayload.email_verification_code = code;
       userPayload.email_verification_expires_at = new Date(Date.now() + VERIFICATION_TTL_MS).toISOString();
       userPayload.email_verification_last_sent_at = new Date().toISOString();
-      const result = await sendVerificationEmail(userPayload.email, code);
-      if (!result.sent) devCode = result.devCode;
+      await sendVerificationEmail(userPayload.email, code);
     }
 
     const row = await db.createUser(userPayload);
 
     const token = signToken(row);
-    res.status(201).json({ token, user: toPublicUser(row), devCode });
+    res.status(201).json({ token, user: toPublicUser(row) });
   } catch (e) {
     next(e);
   }
@@ -151,7 +148,7 @@ router.post("/resend-verification", authenticate(true), async (req, res, next) =
     });
 
     const result = await sendVerificationEmail(req.user.email, code);
-    res.json({ ok: true, devCode: result.sent ? undefined : result.devCode });
+    res.json({ ok: true, sent: result.sent });
   } catch (e) {
     next(e);
   }

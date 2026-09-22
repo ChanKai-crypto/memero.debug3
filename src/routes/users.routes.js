@@ -19,7 +19,6 @@ router.patch("/me", authenticate(true), async (req, res, next) => {
   try {
 const { email, avatarUrl } = req.body || {};
     const patch = {};
-    let devCode;
 
     if (typeof email === "string") {
       const trimmed = email.trim();
@@ -40,8 +39,7 @@ const { email, avatarUrl } = req.body || {};
           patch.email_verification_code = code;
           patch.email_verification_expires_at = new Date(Date.now() + 15 * 60 * 1000).toISOString();
           patch.email_verification_last_sent_at = new Date().toISOString();
-          const result = await sendVerificationEmail(trimmed, code);
-          if (!result.sent) devCode = result.devCode;
+          await sendVerificationEmail(trimmed, code);
         } else {
           patch.email_verification_code = null;
           patch.email_verification_expires_at = null;
@@ -59,7 +57,7 @@ const { email, avatarUrl } = req.body || {};
     }
 
     const row = await db.updateUser(req.user.id, patch);
-    res.json({ user: toPublicUser(row), devCode });
+    res.json({ user: toPublicUser(row) });
   } catch (e) {
     next(e);
   }

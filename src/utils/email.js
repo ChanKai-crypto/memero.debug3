@@ -1,28 +1,50 @@
 /**
- * Envoi d'email minimal, pour le code de vérification à l'inscription.
+ * Envoi d'email pour le code de vérification à l'inscription.
  *
- * Utilise Resend (https://resend.com) si RESEND_API_KEY est définie — un
- * service gratuit jusqu'à 3000 emails/mois, une seule clé API, pas de carte
- * bancaire requise pour démarrer. Aucune dépendance npm supplémentaire :
- * on appelle directement leur API REST avec fetch (disponible nativement
- * depuis Node 18, la version minimale déjà requise par ce projet).
+ * Deux façons de l'envoyer, utilisées dans cet ordre de priorité :
  *
- * Si RESEND_API_KEY n'est pas définie, on n'échoue pas : le code est
- * simplement affiché dans les logs du serveur (pratique en développement,
- * ou le temps de configurer un vrai envoi). C'est pour ça que les routes
- * /api/auth/resend-verification et /api/auth/verify-email fonctionnent
- * même sans email configuré, avec le code visible dans les logs Render.
+ * 1. Gmail (via nodemailer + mot de passe d'application) — si GMAIL_USER
+ *    et GMAIL_APP_PASSWORD sont définies. C'est la méthode recommandée ici :
+ *    - GMAIL_USER=memerro65@gmail.com (ou l'adresse Gmail que tu utilises)
+ *    - GMAIL_APP_PASSWORD= un "mot de passe d'application" généré depuis
+ *      https://myaccount.google.com/apppasswords (nécessite la validation
+ *      en 2 étapes activée sur ce compte Gmail — Google ne permet plus
+ *      d'utiliser le mot de passe normal du compte pour ça).
+ *
+ * 2. Resend (https://resend.com) — si RESEND_API_KEY est définie à la
+ *    place. Utile si tu préfères un service dédié à l'envoi transactionnel
+ *    plutôt qu'un compte Gmail personnel.
+ *
+ * Si NI L'UN NI L'AUTRE n'est configuré, l'email n'est pas envoyé — le
+ * code est alors seulement visible dans les logs du serveur (Render →
+ * Logs), à titre de secours pour le développement. Le code n'est PLUS
+ * jamais renvoyé au front (voir routes/auth.routes.js) : la personne doit
+ * recevoir son code uniquement par email, nulle part ailleurs dans l'app.
  */
 
+const GMAIL_USER = process.env.GMAIL_USER;
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const EMAIL_FROM = process.env.EMAIL_FROM || "Memerro <onboarding@resend.dev>";
+const EMAIL_FROM = process.env.EMAIL_FROM || (GMAIL_USER ? `Memerro <${GMAIL_USER}>` : "Memerro <onboarding@resend.dev>");
 
-/**
- * Envoie un email. Renvoie { sent: boolean, devCode?: string } — devCode
- * n'est renvoyé (utile pour du debug côté serveur) que si l'envoi réel n'a
- * pas pu avoir lieu faute de configuration.
- */
-async function sendVerificationEmail(to, code) {
+let gmailTransporter = null;
+function getGmailTransporter() {
+  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) return null;
+  if (!gmailTransporter) {
+    // require() fait ici (pas en haut du fichier) : si nodemailer n'est
+    // pas installé et que Gmail n'est pas configuré, le reste du serveur
+    // continue de fonctionner normalement (repli sur Resend, ou sur les
+    // logs) au lieu de planter au démarrage.
+    const nodemailer = require("nodemailer");
+    gmailTransporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
+    });
+  }
+  return gmailTransporter;
+}
+
+function buildMessage(to, code) {
   const subject = "Ton code de vérification Memerro";
   const text = `Ton code de vérification est : ${code}\n\nIl expire dans 15 minutes. Si tu n'es pas à l'origine de cette demande, ignore cet email.`;
   const html = `
@@ -32,33 +54,57 @@ async function sendVerificationEmail(to, code) {
       <div style="font-size:32px;font-weight:800;letter-spacing:6px;background:#f4f4f4;padding:16px;text-align:center;border-radius:12px;margin:16px 0;">${code}</div>
       <p style="color:#888;font-size:13px;">Ce code expire dans 15 minutes. Si tu n'es pas à l'origine de cette demande, ignore simplement cet email.</p>
     </div>`;
+  return { subject, text, html };
+}
 
-  if (!RESEND_API_KEY) {
-    console.warn(
-      `⚠️  RESEND_API_KEY non définie : email non envoyé. Code de vérification pour ${to} : ${code} (valable 15 min).`
-    );
-    return { sent: false, devCode: code };
-  }
+/**
+ * Envoie un email de vérification. Renvoie { sent: boolean }. Le code
+ * n'est plus jamais renvoyé dans la réponse HTTP (voir les routes) : en
+ * cas d'échec, il reste uniquement visible dans les logs serveur.
+ */
+async function sendVerificationEmail(to, code) {
+  const { subject, text, html } = buildMessage(to, code);
 
-  try {
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ from: EMAIL_FROM, to: [to], subject, text, html }),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      console.error(`[email] Échec d'envoi Resend (${res.status}) :`, body);
-      return { sent: false, devCode: code };
+  const transporter = getGmailTransporter();
+  if (transporter) {
+    try {
+      await transporter.sendMail({ from: EMAIL_FROM, to, subject, text, html });
+      return { sent: true };
+    } catch (e) {
+      console.error("[email] Échec d'envoi via Gmail :", e.message);
+      console.warn(`⚠️  Code de vérification pour ${to} (envoi Gmail échoué) : ${code} (valable 15 min).`);
+      return { sent: false };
     }
-    return { sent: true };
-  } catch (e) {
-    console.error("[email] Erreur d'envoi :", e.message);
-    return { sent: false, devCode: code };
   }
+
+  if (RESEND_API_KEY) {
+    try {
+      const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ from: EMAIL_FROM, to: [to], subject, text, html }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        console.error(`[email] Échec d'envoi Resend (${res.status}) :`, body);
+        console.warn(`⚠️  Code de vérification pour ${to} (envoi Resend échoué) : ${code} (valable 15 min).`);
+        return { sent: false };
+      }
+      return { sent: true };
+    } catch (e) {
+      console.error("[email] Erreur d'envoi Resend :", e.message);
+      console.warn(`⚠️  Code de vérification pour ${to} (envoi Resend échoué) : ${code} (valable 15 min).`);
+      return { sent: false };
+    }
+  }
+
+  console.warn(
+    `⚠️  Aucun envoi d'email configuré (ni GMAIL_USER, ni RESEND_API_KEY) : email non envoyé. Code de vérification pour ${to} : ${code} (valable 15 min).`
+  );
+  return { sent: false };
 }
 
 function generateCode() {

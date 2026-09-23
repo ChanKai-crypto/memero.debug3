@@ -29,6 +29,14 @@ alter table users add column if not exists email_verification_code text;
 alter table users add column if not exists email_verification_expires_at timestamptz;
 alter table users add column if not exists email_verification_last_sent_at timestamptz;
 
+-- Rôle "Pilier" (superadmin) : le compte protégé, créé via ADMIN_USERNAME/
+-- ADMIN_PASSWORD, que les admins normaux ne peuvent pas modifier. Certains
+-- projets ont une contrainte qui n'autorisait encore que 'user'/'admin' —
+-- on l'élargit ici (sans danger à relancer, même si elle a déjà été mise à
+-- jour, ou si elle n'existait pas du tout).
+alter table users drop constraint if exists users_role_check;
+alter table users add constraint users_role_check check (role in ('user', 'admin', 'superadmin'));
+
 create index if not exists users_username_lower_idx on users (lower(username));
 create index if not exists users_stripe_customer_idx on users (stripe_customer_id);
 create index if not exists quizzes_owner_idx on quizzes (owner_id);

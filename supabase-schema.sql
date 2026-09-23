@@ -13,7 +13,7 @@ create table if not exists users (
   username text not null unique,
   email text,
   password_hash text not null,
-  role text not null default 'user',
+  role text not null default 'user', -- 'user' | 'admin' | 'superadmin' (voir users_role_check plus bas)
   avatar_url text,
   banned boolean not null default false,
   subscription jsonb not null default '{"tier":"free","status":"active","startedAt":null,"renewsAt":null,"provider":null,"providerTransactionId":null}'::jsonb,
@@ -59,6 +59,12 @@ alter table users add column if not exists email_verification_last_sent_at times
 
 -- Langue d'explication du quiz (distincte de la langue principale "language").
 alter table quizzes add column if not exists instruction_language text;
+
+-- Rôle "Pilier" (superadmin) : le compte protégé créé via ADMIN_USERNAME/
+-- ADMIN_PASSWORD (voir scripts/seedAdmin.js), que les admins normaux ne
+-- peuvent pas modifier (rôle, bannissement, mot de passe, suppression).
+alter table users drop constraint if exists users_role_check;
+alter table users add constraint users_role_check check (role in ('user', 'admin', 'superadmin'));
 
 create index if not exists users_username_lower_idx on users (lower(username));
 create index if not exists users_stripe_customer_idx on users (stripe_customer_id);

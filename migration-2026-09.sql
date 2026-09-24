@@ -29,13 +29,13 @@ alter table users add column if not exists email_verification_code text;
 alter table users add column if not exists email_verification_expires_at timestamptz;
 alter table users add column if not exists email_verification_last_sent_at timestamptz;
 
--- Rôle "Pilier" (superadmin) : le compte protégé, créé via ADMIN_USERNAME/
--- ADMIN_PASSWORD, que les admins normaux ne peuvent pas modifier. Certains
--- projets ont une contrainte qui n'autorisait encore que 'user'/'admin' —
--- on l'élargit ici (sans danger à relancer, même si elle a déjà été mise à
--- jour, ou si elle n'existait pas du tout).
+-- Compte "Pilier" (protégé) : reste un admin tout à fait normal (même rôle
+-- "admin", donc tous les droits admin sans exception nulle part dans le
+-- code), mais les autres admins ne peuvent pas le modifier (rôle,
+-- bannissement, mot de passe, suppression). Voir scripts/seedAdmin.js.
+alter table users add column if not exists protected boolean not null default false;
 alter table users drop constraint if exists users_role_check;
-alter table users add constraint users_role_check check (role in ('user', 'admin', 'superadmin'));
+alter table users add constraint users_role_check check (role in ('user', 'admin'));
 
 create index if not exists users_username_lower_idx on users (lower(username));
 create index if not exists users_stripe_customer_idx on users (stripe_customer_id);

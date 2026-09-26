@@ -142,17 +142,25 @@ Deux façons de faire, et il te faut la première pour que **tout le monde**
 | POST    | `/api/billing/portal`             | connecté          | Ouvre le portail Stripe (facture, carte, résiliation) |
 | POST    | `/api/billing/webhook`            | Stripe uniquement | Confirme le paiement et active l'abonnement (jamais appelé par l'app) |
 
-## 6. Stripe (paiement réel des abonnements)
+## 6. Stripe (paiement réel des abonnements et des gemmes)
 
 1. Crée un compte sur [stripe.com](https://stripe.com) (mode **Test** pour essayer sans vrai argent).
 2. **Developers → API keys** → copie la **Secret key** dans `STRIPE_SECRET_KEY`.
 3. Crée 3 **Products** (Premium bas / standard / plus), chacun avec un **Price**
    récurrent mensuel. Copie chaque ID (`price_...`) dans `STRIPE_PRICE_BAS`,
    `STRIPE_PRICE_STANDARD`, `STRIPE_PRICE_PLUS`.
-4. **Developers → Webhooks → Add endpoint** : URL = `https://ton-service.onrender.com/api/billing/webhook`,
+4. **Pour les packs de gemmes** (achat ponctuel dans la boutique, pas un
+   abonnement) : crée 4 **Products** supplémentaires (un par pack), chacun
+   avec un **Price** — décoche bien **"Recurring"** cette fois (paiement
+   unique). Copie chaque ID dans `STRIPE_PRICE_GEMS_PETIT`,
+   `STRIPE_PRICE_GEMS_MOYEN`, `STRIPE_PRICE_GEMS_GRAND`, `STRIPE_PRICE_GEMS_MEGA`.
+   Le nombre de gemmes de chaque pack (500 / 1200 / 3000 / 7000) est fixé
+   dans `src/utils/stripe.js` (`GEM_PACKS`) — modifie ce fichier si tu veux
+   changer ces quantités.
+5. **Developers → Webhooks → Add endpoint** : URL = `https://ton-service.onrender.com/api/billing/webhook`,
    événements à écouter : `checkout.session.completed`, `customer.subscription.updated`,
    `customer.subscription.deleted`. Copie le **Signing secret** dans `STRIPE_WEBHOOK_SECRET`.
-5. Renseigne `FRONTEND_URL` (l'adresse de ton site) — Stripe y renvoie le joueur après paiement.
+6. Renseigne `FRONTEND_URL` (l'adresse de ton site) — Stripe y renvoie le joueur après paiement.
 
 ## 7. Sécurité et bonnes pratiques
 

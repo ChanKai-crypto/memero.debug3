@@ -57,6 +57,13 @@ alter table users add column if not exists email_verification_code text;
 alter table users add column if not exists email_verification_expires_at timestamptz;
 alter table users add column if not exists email_verification_last_sent_at timestamptz;
 
+-- Réinitialisation de mot de passe ("mot de passe oublié"), même schéma
+-- que la vérification d'email ci-dessus : un code à 6 chiffres, valable
+-- 15 minutes, envoyé par email.
+alter table users add column if not exists password_reset_code text;
+alter table users add column if not exists password_reset_expires_at timestamptz;
+alter table users add column if not exists password_reset_last_sent_at timestamptz;
+
 -- Langue d'explication du quiz (distincte de la langue principale "language").
 alter table quizzes add column if not exists instruction_language text;
 

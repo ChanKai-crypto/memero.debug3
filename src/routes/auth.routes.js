@@ -232,6 +232,35 @@ router.post("/forgot-password", async (req, res, next) => {
 // remplace le mot de passe. Contrairement à /forgot-password, cette route
 // répond précisément (code invalide/expiré) — à ce stade, la personne a
 // déjà prouvé avoir reçu l'email, donc plus besoin de rester vague.
+// POST /api/auth/verify-reset-code   { username, code }
+// Vérifie un code de réinitialisation SANS changer le mot de passe — permet
+// au client de confirmer le code d'abord, et de n'ouvrir l'écran "nouveau
+// mot de passe" qu'une fois cette confirmation obtenue, plutôt que de tout
+// mélanger dans un seul formulaire.
+router.post("/verify-reset-code", async (req, res, next) => {
+  try {
+    const { username, code } = req.body || {};
+    if (!username || !code) {
+      return res.status(400).json({ error: "Pseudo (ou email) et code requis." });
+    }
+    const identifier = String(username).trim();
+    const user = (await db.getUserByUsername(identifier)) || (await db.getUserByEmail(identifier));
+    if (!user || !user.password_reset_code) {
+      return res.status(400).json({ error: "Aucune demande de réinitialisation en attente pour ce compte." });
+    }
+    const expiresAt = user.password_reset_expires_at ? new Date(user.password_reset_expires_at).getTime() : 0;
+    if (Date.now() > expiresAt) {
+      return res.status(400).json({ error: "Code expiré. Redemande un code." });
+    }
+    if (String(code).trim() !== String(user.password_reset_code)) {
+      return res.status(400).json({ error: "Code invalide." });
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.post("/reset-password", async (req, res, next) => {
   try {
     const { username, code, newPassword } = req.body || {};

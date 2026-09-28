@@ -50,6 +50,12 @@ function getGmailTransporter() {
     gmailTransporter = nodemailer.createTransport({
       service: "gmail",
       auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
+      // Délai court avant d'abandonner : sur un hébergeur qui bloque les
+      // ports SMTP sortants (ex. Render en plan gratuit), la connexion ne
+      // sera JAMAIS acceptée ni refusée — elle reste juste sans réponse.
+      // Sans ce réglage, nodemailer attendrait 2 minutes par défaut avant
+      // d'abandonner, retardant d'autant le repli vers Resend ci-dessous.
+      connectionTimeout: 8000,
     });
   }
   return gmailTransporter;
@@ -89,14 +95,23 @@ function buildPasswordResetMessage(code) {
  */
 async function sendEmailMessage(to, code, subject, text, html, logLabel) {
   const transporter = getGmailTransporter();
+  let gmailFailed = false;
   if (transporter) {
     try {
       await transporter.sendMail({ from: GMAIL_FROM, to, subject, text, html });
       return { sent: true };
     } catch (e) {
+      // ⚠️ Symptôme connu : "Connection timeout" ici signifie presque
+      // toujours que l'hébergeur bloque les ports SMTP sortants (25, 465,
+      // 587) — pas un souci d'identifiants. C'est le cas de Render sur son
+      // plan gratuit, qui bloque ces ports depuis septembre 2025 pour lutter
+      // contre le spam. Dans ce cas, Gmail via SMTP ne fonctionnera JAMAIS,
+      // quels que soient les identifiants : il faut passer par un envoi en
+      // HTTPS (Resend ci-dessous) plutôt que du SMTP brut.
       console.error("[email] Échec d'envoi via Gmail :", e.message);
-      console.warn(`⚠️  ${logLabel} pour ${to} (envoi Gmail échoué) : ${code} (valable 15 min).`);
-      return { sent: false };
+      gmailFailed = true;
+      // Ne pas encore renvoyer ici : on continue vers Resend si configuré,
+      // au lieu d'abandonner immédiatement.
     }
   }
 
@@ -116,12 +131,18 @@ async function sendEmailMessage(to, code, subject, text, html, logLabel) {
         console.warn(`⚠️  ${logLabel} pour ${to} (envoi Resend échoué) : ${code} (valable 15 min).`);
         return { sent: false };
       }
+      if (gmailFailed) console.log(`[email] Envoyé via Resend après échec Gmail, pour ${to}.`);
       return { sent: true };
     } catch (e) {
       console.error("[email] Erreur d'envoi Resend :", e.message);
       console.warn(`⚠️  ${logLabel} pour ${to} (envoi Resend échoué) : ${code} (valable 15 min).`);
       return { sent: false };
     }
+  }
+
+  if (gmailFailed) {
+    console.warn(`⚠️  ${logLabel} pour ${to} (envoi Gmail échoué, aucun repli Resend configuré) : ${code} (valable 15 min).`);
+    return { sent: false };
   }
 
   console.warn(

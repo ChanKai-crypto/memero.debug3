@@ -199,11 +199,15 @@ router.post("/verify-email", authenticate(true), async (req, res, next) => {
 // deviendrait un moyen de vérifier l'existence de n'importe quel compte.
 router.post("/forgot-password", async (req, res, next) => {
   try {
-    const { username } = req.body || {};
+    const { username } = req.body || {}; // accepte un pseudo OU un email dans ce même champ
     const genericResponse = { ok: true, message: "Si ce compte existe et a un email associé, un code de réinitialisation vient d'y être envoyé." };
-    if (!username || !String(username).trim()) return res.json(genericResponse);
+    const identifier = username ? String(username).trim() : "";
+    if (!identifier) return res.json(genericResponse);
 
-    const user = await db.getUserByUsername(String(username).trim());
+    // Essaie d'abord par pseudo, puis par email si rien trouvé (ou l'inverse
+    // ne changerait rien : un identifiant ne peut jamais matcher les deux à
+    // la fois puisqu'un pseudo ne contient pas "@" à l'inscription).
+    const user = (await db.getUserByUsername(identifier)) || (await db.getUserByEmail(identifier));
     if (!user || !user.email) return res.json(genericResponse);
 
     const lastSent = user.password_reset_last_sent_at ? new Date(user.password_reset_last_sent_at).getTime() : 0;
@@ -238,7 +242,7 @@ router.post("/reset-password", async (req, res, next) => {
       return res.status(400).json({ error: "Le mot de passe doit faire au moins 6 caractères." });
     }
 
-    const user = await db.getUserByUsername(String(username).trim());
+    const user = (await db.getUserByUsername(String(username).trim())) || (await db.getUserByEmail(String(username).trim()));
     if (!user || !user.password_reset_code) {
       return res.status(400).json({ error: "Aucune demande de réinitialisation en attente pour ce compte." });
     }

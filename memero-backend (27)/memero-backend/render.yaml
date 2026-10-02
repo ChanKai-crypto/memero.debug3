@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: memero-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      # Optionnel : décommente et adapte si tu ajoutes un disque persistant
+      # payant (Dashboard Render > ton service > Disks), pour que la base
+      # de données survive aux redéploiements.
+      # - key: DB_PATH
+      #   value: /var/data/db.json

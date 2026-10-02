@@ -135,6 +135,27 @@ async function listPublicPlaylists() {
 // Vue admin : TOUS les parcours (y compris privés), avec le pseudo du
 // propriétaire — utilisé par le panneau d'administration pour pouvoir
 // marquer un parcours comme officiel.
+// Quiz individuels à masquer de la liste publique /api/quizzes : ceux
+// qui appartiennent à un parcours à la fois GUIDÉ et OFFICIEL. Dans ce
+// cas précis, le quiz ne doit plus apparaître tout seul dans la rubrique
+// Quiz — on ne doit le trouver qu'à l'intérieur du parcours lui-même.
+// Même règle déjà appliquée côté client (getQuizIdsHiddenByGuidedOfficialPlaylists),
+// répliquée ici pour que ce soit vrai même pour un client qui n'a pas
+// encore synchronisé ses parcours localement.
+async function getQuizIdsHiddenByOfficialGuidedPlaylists() {
+  const { data, error } = await supabase.from("users").select("playlists").limit(1000);
+  throwIfError(error, "getQuizIdsHiddenByOfficialGuidedPlaylists");
+  const hidden = new Set();
+  (data || []).forEach((u) => {
+    (Array.isArray(u.playlists) ? u.playlists : []).forEach((p) => {
+      if (p && p.guided && p.official && Array.isArray(p.quizIds)) {
+        p.quizIds.forEach((qid) => hidden.add(qid));
+      }
+    });
+  });
+  return hidden;
+}
+
 async function listAllPlaylistsAdmin() {
   const { data, error } = await supabase.from("users").select("username, playlists").limit(1000);
   throwIfError(error, "listAllPlaylistsAdmin");
@@ -241,6 +262,7 @@ module.exports = {
   listAllPlaylistsAdmin,
   setPlaylistFields,
   deletePlaylist,
+  getQuizIdsHiddenByOfficialGuidedPlaylists,
   getQuizById,
   createQuiz,
   updateQuiz,

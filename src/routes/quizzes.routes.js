@@ -22,17 +22,22 @@ function canEdit(user, quiz) {
 // GET /api/quizzes
 router.get("/", authenticate(false), async (req, res, next) => {
   try {
-    const rows = await db.listQuizzes();
+    const [rows, hiddenIds] = await Promise.all([
+      db.listQuizzes(),
+      db.getQuizIdsHiddenByOfficialGuidedPlaylists(),
+    ]);
     const premium = isPremiumUser(req.user);
 
-    const list = rows.map((row) => {
-      const quiz = toPublicQuiz(row);
-      if (quiz.premiumOnly && !premium) {
-        const { raw, config, ...locked } = quiz;
-        return { ...locked, locked: true };
-      }
-      return { ...quiz, locked: false };
-    });
+    const list = rows
+      .filter((row) => !hiddenIds.has(row.id))
+      .map((row) => {
+        const quiz = toPublicQuiz(row);
+        if (quiz.premiumOnly && !premium) {
+          const { raw, config, ...locked } = quiz;
+          return { ...locked, locked: true };
+        }
+        return { ...quiz, locked: false };
+      });
 
     res.json({ quizzes: list });
   } catch (e) {

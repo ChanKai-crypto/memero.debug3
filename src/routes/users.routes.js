@@ -197,8 +197,13 @@ router.post("/me/history", authenticate(true), async (req, res, next) => {
 });
 
 // GET /api/users/me/playlists
-router.get("/me/playlists", authenticate(true), (req, res) => {
-  res.json({ playlists: Array.isArray(req.user.playlists) ? req.user.playlists : [] });
+router.get("/me/playlists", authenticate(true), async (req, res, next) => {
+  try {
+    const playlists = await db.getUserPlaylists(req.user.id);
+    res.json({ playlists });
+  } catch (e) {
+    next(e);
+  }
 });
 
 // PUT /api/users/me/playlists  { playlists: [...] }
@@ -208,8 +213,8 @@ router.put("/me/playlists", authenticate(true), async (req, res, next) => {
     if (!Array.isArray(playlists)) {
       return res.status(400).json({ error: "playlists doit être un tableau." });
     }
-    const row = await db.updateUser(req.user.id, { playlists });
-    res.json({ playlists: row.playlists || [] });
+    const updated = await db.replaceUserPlaylists(req.user.id, req.user.username, playlists);
+    res.json({ playlists: updated });
   } catch (e) {
     next(e);
   }

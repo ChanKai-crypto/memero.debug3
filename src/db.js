@@ -120,98 +120,161 @@ async function listOfficialScores(limit) {
   return out.sort((a, b) => b.score - a.score).slice(0, limit || 50);
 }
 
-async function listPublicPlaylists() {
-  const { data, error } = await supabase.from("users").select("username, playlists").limit(1000);
-  throwIfError(error, "listPublicPlaylists");
-  const out = [];
-  (data || []).forEach((u) => {
-    (Array.isArray(u.playlists) ? u.playlists : []).forEach((p) => {
-      if (p && !p.private) out.push({ ...p, owner: p.owner || u.username });
-    });
-  });
-  return out.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+/* ------------------------------- Parcours -----------------------------------
+   Désormais une vraie table dédiée ("playlists"), plus un tableau JSON
+   imbriqué dans users.playlists. Avantage concret : supprimer un parcours,
+   le marquer officiel, etc. est maintenant un DELETE/UPDATE direct par id,
+   exactement comme pour les quiz — fini le "retrouver le propriétaire
+   parmi tous les comptes puis réécrire tout son tableau", qui était fragile
+   et à l'origine du bouton Supprimer qui ne faisait rien côté admin. */
+
+function toPublicPlaylist(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    quizIds: Array.isArray(row.quiz_ids) ? row.quiz_ids : [],
+    private: !!row.private,
+    guided: !!row.guided,
+    official: !!row.official,
+    language: row.language || undefined,
+    instructionLanguage: row.instruction_language || undefined,
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+    owner: row.owner_username || undefined,
+  };
 }
 
-// Vue admin : TOUS les parcours (y compris privés), avec le pseudo du
-// propriétaire — utilisé par le panneau d'administration pour pouvoir
-// marquer un parcours comme officiel.
+async function listPublicPlaylists() {
+  const { data, error } = await supabase
+    .from("playlists")
+    .select("*")
+    .eq("private", false)
+    .order("created_at", { ascending: false })
+    .limit(2000);
+  throwIfError(error, "listPublicPlaylists");
+  return (data || []).map(toPublicPlaylist);
+}
+
 // Quiz individuels à masquer de la liste publique /api/quizzes : ceux
 // qui appartiennent à un parcours à la fois GUIDÉ et OFFICIEL. Dans ce
 // cas précis, le quiz ne doit plus apparaître tout seul dans la rubrique
 // Quiz — on ne doit le trouver qu'à l'intérieur du parcours lui-même.
-// Même règle déjà appliquée côté client (getQuizIdsHiddenByGuidedOfficialPlaylists),
-// répliquée ici pour que ce soit vrai même pour un client qui n'a pas
-// encore synchronisé ses parcours localement.
+// Même règle déjà appliquée côté client (getQuizIdsHiddenByGuidedOfficialPlaylists).
 async function getQuizIdsHiddenByOfficialGuidedPlaylists() {
-  const { data, error } = await supabase.from("users").select("playlists").limit(1000);
+  const { data, error } = await supabase
+    .from("playlists")
+    .select("quiz_ids")
+    .eq("guided", true)
+    .eq("official", true);
   throwIfError(error, "getQuizIdsHiddenByOfficialGuidedPlaylists");
   const hidden = new Set();
-  (data || []).forEach((u) => {
-    (Array.isArray(u.playlists) ? u.playlists : []).forEach((p) => {
-      if (p && p.guided && p.official && Array.isArray(p.quizIds)) {
-        p.quizIds.forEach((qid) => hidden.add(qid));
-      }
-    });
+  (data || []).forEach((row) => {
+    (Array.isArray(row.quiz_ids) ? row.quiz_ids : []).forEach((qid) => hidden.add(qid));
   });
   return hidden;
 }
 
+// Vue admin : TOUS les parcours (y compris privés), avec le pseudo du
+// propriétaire — utilisé par le panneau d'administration.
 async function listAllPlaylistsAdmin() {
-  const { data, error } = await supabase.from("users").select("username, playlists").limit(1000);
+  const { data, error } = await supabase
+    .from("playlists")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(2000);
   throwIfError(error, "listAllPlaylistsAdmin");
-  const out = [];
-  (data || []).forEach((u) => {
-    (Array.isArray(u.playlists) ? u.playlists : []).forEach((p) => {
-      if (p) out.push({ ...p, ownerUsername: u.username });
-    });
-  });
-  return out.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return (data || []).map((row) => ({ ...toPublicPlaylist(row), ownerUsername: row.owner_username }));
 }
 
-// Marque (ou démarque) un parcours comme officiel. Les parcours vivant
-// dans le tableau JSON "playlists" de leur propriétaire (pas leur propre
-// table), il faut d'abord retrouver CE propriétaire avant de patcher son
-// tableau. Renvoie null si aucun parcours avec cet id n'existe.
+// Marque (ou démarque) un parcours comme officiel/guidé. Renvoie null si
+// aucun parcours avec cet id n'existe.
 async function setPlaylistFields(playlistId, patch) {
-  const { data, error } = await supabase.from("users").select("id, username, playlists").limit(1000);
-  throwIfError(error, "setPlaylistFields:list");
-  const owner = (data || []).find(
-    (u) => Array.isArray(u.playlists) && u.playlists.some((p) => p && p.id === playlistId)
-  );
-  if (!owner) return null;
-  const updatedPlaylists = owner.playlists.map((p) =>
-    p && p.id === playlistId ? { ...p, ...patch } : p
-  );
-  const { data: updatedRow, error: updateError } = await supabase
-    .from("users")
-    .update({ playlists: updatedPlaylists })
-    .eq("id", owner.id)
+  const allowed = {};
+  if (typeof patch.official === "boolean") allowed.official = patch.official;
+  if (typeof patch.guided === "boolean") allowed.guided = patch.guided;
+  allowed.updated_at = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("playlists")
+    .update(allowed)
+    .eq("id", playlistId)
     .select()
-    .single();
-  throwIfError(updateError, "setPlaylistFields:update");
-  const playlist = (updatedRow.playlists || []).find((p) => p && p.id === playlistId);
-  return { playlist, ownerUsername: owner.username };
+    .maybeSingle();
+  throwIfError(error, "setPlaylistFields");
+  if (!data) return null;
+  return { playlist: toPublicPlaylist(data), ownerUsername: data.owner_username };
 }
 
-// Supprime un parcours. Même principe que setPlaylistFields : retrouve
-// d'abord le propriétaire (le parcours vit dans SON tableau JSON, pas dans
-// une table à lui), puis réécrit ce tableau sans l'entrée concernée.
-// Renvoie false si aucun parcours avec cet id n'existe (rien à faire),
-// true si la suppression a bien eu lieu.
+// Supprime un parcours — un DELETE direct par id, maintenant que les
+// parcours ont leur propre table. Renvoie false si aucun parcours avec cet
+// id n'existe (rien à faire), true si la suppression a bien eu lieu.
 async function deletePlaylist(playlistId) {
-  const { data, error } = await supabase.from("users").select("id, playlists").limit(1000);
-  throwIfError(error, "deletePlaylist:list");
-  const owner = (data || []).find(
-    (u) => Array.isArray(u.playlists) && u.playlists.some((p) => p && p.id === playlistId)
-  );
-  if (!owner) return false;
-  const remainingPlaylists = owner.playlists.filter((p) => !(p && p.id === playlistId));
-  const { error: updateError } = await supabase
-    .from("users")
-    .update({ playlists: remainingPlaylists })
-    .eq("id", owner.id);
-  throwIfError(updateError, "deletePlaylist:update");
-  return true;
+  const { data, error } = await supabase.from("playlists").delete().eq("id", playlistId).select();
+  throwIfError(error, "deletePlaylist");
+  return (data || []).length > 0;
+}
+
+// Les parcours D'UN compte précis (pour que ce compte les retrouve sur un
+// autre appareil).
+async function getUserPlaylists(userId) {
+  const { data, error } = await supabase
+    .from("playlists")
+    .select("*")
+    .eq("owner_id", userId)
+    .order("created_at", { ascending: false });
+  throwIfError(error, "getUserPlaylists");
+  return (data || []).map(toPublicPlaylist);
+}
+
+// Remplace l'ensemble des parcours D'UN compte par la liste envoyée par le
+// client (même contrat que l'ancien PUT /api/users/me/playlists, qui
+// écrivait tout le tableau JSON d'un coup) : upsert chaque parcours reçu,
+// puis supprime ceux de ce compte qui ne sont plus dans la liste — c'est
+// ainsi qu'une suppression faite localement (via le menu "..." d'un
+// parcours) se répercute bien sur le serveur. Important : le champ
+// "official" n'est JAMAIS pris depuis le client (un simple utilisateur ne
+// doit jamais pouvoir se marquer lui-même "officiel") — on conserve
+// toujours la valeur déjà en base, uniquement modifiable par l'admin via
+// setPlaylistFields.
+async function replaceUserPlaylists(userId, username, playlists) {
+  const { data: existing, error: fetchErr } = await supabase
+    .from("playlists")
+    .select("id, official")
+    .eq("owner_id", userId);
+  throwIfError(fetchErr, "replaceUserPlaylists:fetchExisting");
+  const officialById = {};
+  (existing || []).forEach((row) => { officialById[row.id] = row.official; });
+
+  const incomingIds = playlists.map((p) => p.id).filter(Boolean);
+
+  if (playlists.length > 0) {
+    const rows = playlists
+      .filter((p) => p && p.id)
+      .map((p) => ({
+        id: p.id,
+        owner_id: userId,
+        owner_username: username || null,
+        name: p.name || "Nouveau parcours",
+        quiz_ids: Array.isArray(p.quizIds) ? p.quizIds : [],
+        private: !!p.private,
+        guided: !!p.guided,
+        official: Object.prototype.hasOwnProperty.call(officialById, p.id) ? !!officialById[p.id] : false,
+        language: p.language || null,
+        instruction_language: p.instructionLanguage || null,
+        created_at: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }));
+    const { error: upsertError } = await supabase.from("playlists").upsert(rows, { onConflict: "id" });
+    throwIfError(upsertError, "replaceUserPlaylists:upsert");
+  }
+
+  let delQuery = supabase.from("playlists").delete().eq("owner_id", userId);
+  if (incomingIds.length > 0) {
+    delQuery = delQuery.not("id", "in", `(${incomingIds.map((id) => `"${id}"`).join(",")})`);
+  }
+  const { error: delError } = await delQuery;
+  throwIfError(delError, "replaceUserPlaylists:delete");
+
+  return getUserPlaylists(userId);
 }
 
 /* ---------------------------------- Quiz ------------------------------------ */
@@ -263,6 +326,8 @@ module.exports = {
   setPlaylistFields,
   deletePlaylist,
   getQuizIdsHiddenByOfficialGuidedPlaylists,
+  getUserPlaylists,
+  replaceUserPlaylists,
   getQuizById,
   createQuiz,
   updateQuiz,

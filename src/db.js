@@ -172,6 +172,27 @@ async function setPlaylistFields(playlistId, patch) {
   return { playlist, ownerUsername: owner.username };
 }
 
+// Supprime un parcours. Même principe que setPlaylistFields : retrouve
+// d'abord le propriétaire (le parcours vit dans SON tableau JSON, pas dans
+// une table à lui), puis réécrit ce tableau sans l'entrée concernée.
+// Renvoie false si aucun parcours avec cet id n'existe (rien à faire),
+// true si la suppression a bien eu lieu.
+async function deletePlaylist(playlistId) {
+  const { data, error } = await supabase.from("users").select("id, playlists").limit(1000);
+  throwIfError(error, "deletePlaylist:list");
+  const owner = (data || []).find(
+    (u) => Array.isArray(u.playlists) && u.playlists.some((p) => p && p.id === playlistId)
+  );
+  if (!owner) return false;
+  const remainingPlaylists = owner.playlists.filter((p) => !(p && p.id === playlistId));
+  const { error: updateError } = await supabase
+    .from("users")
+    .update({ playlists: remainingPlaylists })
+    .eq("id", owner.id);
+  throwIfError(updateError, "deletePlaylist:update");
+  return true;
+}
+
 /* ---------------------------------- Quiz ------------------------------------ */
 
 async function getQuizById(id) {
@@ -219,6 +240,7 @@ module.exports = {
   listPublicPlaylists,
   listAllPlaylistsAdmin,
   setPlaylistFields,
+  deletePlaylist,
   getQuizById,
   createQuiz,
   updateQuiz,

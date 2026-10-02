@@ -135,6 +135,17 @@ router.patch("/playlists/:id", async (req, res, next) => {
   }
 });
 
+// DELETE /api/admin/playlists/:id
+router.delete("/playlists/:id", async (req, res, next) => {
+  try {
+    const removed = await db.deletePlaylist(req.params.id);
+    if (!removed) return res.status(404).json({ error: "Parcours introuvable." });
+    res.status(204).end();
+  } catch (e) {
+    next(e);
+  }
+});
+
 // GET /api/admin/quizzes (tous, y compris premiumOnly, sans restriction)
 router.get("/quizzes", async (req, res, next) => {
   try {

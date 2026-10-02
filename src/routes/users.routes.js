@@ -94,8 +94,23 @@ const MAX_GEMS_DELTA_PER_SYNC = 5000; // largement au-dessus de ce qu'une vraie 
 const MAX_SCORE_DELTA_PER_SYNC = 2_000_000_000; // aligné sur le plafond de score le plus haut (Expert)
 router.patch("/me/game", authenticate(true), async (req, res, next) => {
   try {
-    const { gems, lives, streak, lifetimeScore, inventory, chestsUnlocked, chestsPending, stats } =
-      req.body || {};
+    const {
+      gems,
+      lives,
+      streak,
+      lifetimeScore,
+      inventory,
+      chestsUnlocked,
+      chestsPending,
+      // Compteurs du cycle quotidien/hebdomadaire des coffres (anti-farming
+      // multi-appareils) : le client les envoyait déjà, mais cette route
+      // les ignorait silencieusement — rien n'était jamais sauvegardé côté
+      // serveur, donc la limite ne protégeait en réalité QUE l'appareil
+      // en cours. Désormais pris en compte comme le reste de l'état de jeu.
+      chestDailyCounts,
+      chestWeeklyLegendary,
+      stats,
+    } = req.body || {};
     const current = req.user;
     const game = { ...current.game };
     let anomalyDetected = false;
@@ -131,6 +146,8 @@ router.patch("/me/game", authenticate(true), async (req, res, next) => {
     if (inventory && typeof inventory === "object") game.inventory = { ...game.inventory, ...inventory };
     if (Array.isArray(chestsUnlocked)) game.chestsUnlocked = chestsUnlocked;
     if (Array.isArray(chestsPending)) game.chestsPending = chestsPending;
+    if (chestDailyCounts && typeof chestDailyCounts === "object") game.chestDailyCounts = chestDailyCounts;
+    if (chestWeeklyLegendary && typeof chestWeeklyLegendary === "object") game.chestWeeklyLegendary = chestWeeklyLegendary;
 
     const patch = { game };
     if (stats && typeof stats === "object") patch.stats = { ...current.stats, ...stats };

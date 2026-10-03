@@ -1,4 +1,5 @@
 require("dotenv").config();
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const { authLimiter, generalLimiter } = require("./middleware/rateLimit");
@@ -32,6 +33,14 @@ app.use(
 app.use("/api/billing/webhook", express.raw({ type: "application/json" }));
 
 app.use(express.json({ limit: "3mb" })); // 3mb pour laisser passer les photos de profil en base64
+
+// Pages légales (Conditions d'utilisation / Politique de confidentialité,
+// FR et EN) : fichiers HTML statiques, accessibles par exemple à
+// https://ton-service.onrender.com/legal/terms-fr.html — c'est vers ces
+// adresses que pointe la case à cocher obligatoire de l'inscription côté
+// app. Pas besoin de passer par une route API pour ça : ce sont de simples
+// pages à consulter dans un navigateur.
+app.use("/legal", express.static(path.join(__dirname, "../public/legal")));
 
 // Limite générale sur toute l'API (voir middleware/rateLimit.js), puis une
 // limite plus stricte spécifiquement sur les routes d'authentification

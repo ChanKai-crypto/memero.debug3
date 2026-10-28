@@ -141,6 +141,14 @@ function toPublicPlaylist(row) {
     instructionLanguage: row.instruction_language || undefined,
     createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
     owner: row.owner_username || undefined,
+    // Parcours "par sections" (toutes les compétences d'une section sont
+    // débloquées ensemble, un seuil ouvre la section suivante) — voir
+    // supabase-sectioned-playlists-migration.sql pour la forme attendue.
+    pathType: row.path_type || "linear",
+    sections: Array.isArray(row.sections) ? row.sections : [],
+    // Section Apprendre à laquelle ce parcours est connecté (null = pas
+    // connecté, s'affiche normalement comme un parcours individuel).
+    learnSectionId: row.learn_section_id || null,
   };
 }
 
@@ -155,23 +163,46 @@ async function listPublicPlaylists() {
   return (data || []).map(toPublicPlaylist);
 }
 
-// Quiz individuels à masquer de la liste publique /api/quizzes : ceux
-// qui appartiennent à un parcours à la fois GUIDÉ et OFFICIEL. Dans ce
-// cas précis, le quiz ne doit plus apparaître tout seul dans la rubrique
-// Quiz — on ne doit le trouver qu'à l'intérieur du parcours lui-même.
-// Même règle déjà appliquée côté client (getQuizIdsHiddenByGuidedOfficialPlaylists).
-async function getQuizIdsHiddenByOfficialGuidedPlaylists() {
-  const { data, error } = await supabase
-    .from("playlists")
-    .select("quiz_ids")
-    .eq("guided", true)
-    .eq("official", true);
-  throwIfError(error, "getQuizIdsHiddenByOfficialGuidedPlaylists");
-  const hidden = new Set();
+// Ensemble des id de quiz qui composent au moins un parcours OFFICIEL.
+// Ces quiz ne doivent plus apparaître seuls dans la rubrique Quiz : on ne
+// les trouve que dans leur parcours. Ils continuent pourtant d'exister
+// (jouables via le parcours) — ils sont simplement "cachés" (colonne
+// quizzes.hidden), jamais supprimés.
+async function getQuizIdsInOfficialPlaylists() {
+  const { data, error } = await supabase.from("playlists").select("quiz_ids").eq("official", true);
+  throwIfError(error, "getQuizIdsInOfficialPlaylists");
+  const ids = new Set();
   (data || []).forEach((row) => {
-    (Array.isArray(row.quiz_ids) ? row.quiz_ids : []).forEach((qid) => hidden.add(qid));
+    (Array.isArray(row.quiz_ids) ? row.quiz_ids : []).forEach((qid) => ids.add(String(qid)));
   });
-  return hidden;
+  return ids;
+}
+
+// Recalcule la colonne quizzes.hidden à partir des parcours officiels :
+// caché = appartient à au moins un parcours officiel. À rappeler après
+// toute modification de parcours (création, suppression, passage en
+// officiel ou retrait). Idempotent : on ne touche que les lignes dont
+// l'état change réellement.
+async function refreshHiddenQuizzes() {
+  const shouldHide = await getQuizIdsInOfficialPlaylists();
+  const { data, error } = await supabase.from("quizzes").select("id, hidden");
+  throwIfError(error, "refreshHiddenQuizzes:list");
+  const toHide = [];
+  const toShow = [];
+  (data || []).forEach((q) => {
+    const want = shouldHide.has(String(q.id));
+    if (want && !q.hidden) toHide.push(q.id);
+    else if (!want && q.hidden) toShow.push(q.id);
+  });
+  if (toHide.length) {
+    const { error: e1 } = await supabase.from("quizzes").update({ hidden: true }).in("id", toHide);
+    throwIfError(e1, "refreshHiddenQuizzes:hide");
+  }
+  if (toShow.length) {
+    const { error: e2 } = await supabase.from("quizzes").update({ hidden: false }).in("id", toShow);
+    throwIfError(e2, "refreshHiddenQuizzes:show");
+  }
+  return { hidden: toHide.length, shown: toShow.length };
 }
 
 // Vue admin : TOUS les parcours (y compris privés), avec le pseudo du
@@ -192,6 +223,18 @@ async function setPlaylistFields(playlistId, patch) {
   const allowed = {};
   if (typeof patch.official === "boolean") allowed.official = patch.official;
   if (typeof patch.guided === "boolean") allowed.guided = patch.guided;
+  // Réservé au panneau admin (cette fonction n'est jamais appelée par la
+  // synchronisation normale des parcours d'un joueur) : type de parcours
+  // "par sections", où toutes les compétences d'une section sont
+  // débloquées ensemble et un seuil ouvre la section suivante.
+  if (patch.pathType === "linear" || patch.pathType === "sectioned") allowed.path_type = patch.pathType;
+  if (Array.isArray(patch.sections)) allowed.sections = patch.sections;
+  // Connecte (ou déconnecte, avec null) ce parcours à une section
+  // Apprendre — un parcours connecté disparaît de l'affichage individuel
+  // et rejoint sa section à la place.
+  if (Object.prototype.hasOwnProperty.call(patch, "learnSectionId")) {
+    allowed.learn_section_id = patch.learnSectionId || null;
+  }
   allowed.updated_at = new Date().toISOString();
   const { data, error } = await supabase
     .from("playlists")
@@ -201,6 +244,7 @@ async function setPlaylistFields(playlistId, patch) {
     .maybeSingle();
   throwIfError(error, "setPlaylistFields");
   if (!data) return null;
+  await refreshHiddenQuizzes();
   return { playlist: toPublicPlaylist(data), ownerUsername: data.owner_username };
 }
 
@@ -210,7 +254,9 @@ async function setPlaylistFields(playlistId, patch) {
 async function deletePlaylist(playlistId) {
   const { data, error } = await supabase.from("playlists").delete().eq("id", playlistId).select();
   throwIfError(error, "deletePlaylist");
-  return (data || []).length > 0;
+  const removed = (data || []).length > 0;
+  if (removed) await refreshHiddenQuizzes();
+  return removed;
 }
 
 // Les parcours D'UN compte précis (pour que ce compte les retrouve sur un
@@ -238,31 +284,49 @@ async function getUserPlaylists(userId) {
 async function replaceUserPlaylists(userId, username, playlists) {
   const { data: existing, error: fetchErr } = await supabase
     .from("playlists")
-    .select("id, official")
+    .select("id, official, path_type, sections, learn_section_id")
     .eq("owner_id", userId);
   throwIfError(fetchErr, "replaceUserPlaylists:fetchExisting");
   const officialById = {};
-  (existing || []).forEach((row) => { officialById[row.id] = row.official; });
+  const sectionedById = {};
+  const learnSectionById = {};
+  (existing || []).forEach((row) => {
+    officialById[row.id] = row.official;
+    // Réglage "parcours par sections" : réservé aux admins (panneau
+    // admin, pas la synchronisation normale depuis l'app) — préservé ici
+    // exactement comme "official" juste au-dessus, sinon la moindre
+    // synchronisation classique d'un parcours de ce propriétaire
+    // écraserait silencieusement sa configuration par sections.
+    sectionedById[row.id] = { pathType: row.path_type, sections: row.sections };
+    // Idem pour la connexion à une section Apprendre.
+    learnSectionById[row.id] = row.learn_section_id;
+  });
 
   const incomingIds = playlists.map((p) => p.id).filter(Boolean);
 
   if (playlists.length > 0) {
     const rows = playlists
       .filter((p) => p && p.id)
-      .map((p) => ({
-        id: p.id,
-        owner_id: userId,
-        owner_username: username || null,
-        name: p.name || "Nouveau parcours",
-        quiz_ids: Array.isArray(p.quizIds) ? p.quizIds : [],
-        private: !!p.private,
-        guided: !!p.guided,
-        official: Object.prototype.hasOwnProperty.call(officialById, p.id) ? !!officialById[p.id] : false,
-        language: p.language || null,
-        instruction_language: p.instructionLanguage || null,
-        created_at: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }));
+      .map((p) => {
+        const preserved = sectionedById[p.id] || { pathType: "linear", sections: [] };
+        return {
+          id: p.id,
+          owner_id: userId,
+          owner_username: username || null,
+          name: p.name || "Nouveau parcours",
+          quiz_ids: Array.isArray(p.quizIds) ? p.quizIds : [],
+          private: !!p.private,
+          guided: !!p.guided,
+          official: Object.prototype.hasOwnProperty.call(officialById, p.id) ? !!officialById[p.id] : false,
+          language: p.language || null,
+          instruction_language: p.instructionLanguage || null,
+          created_at: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          path_type: preserved.pathType || "linear",
+          sections: preserved.sections || [],
+          learn_section_id: Object.prototype.hasOwnProperty.call(learnSectionById, p.id) ? learnSectionById[p.id] : null,
+        };
+      });
     const { error: upsertError } = await supabase.from("playlists").upsert(rows, { onConflict: "id" });
     throwIfError(upsertError, "replaceUserPlaylists:upsert");
   }
@@ -274,6 +338,7 @@ async function replaceUserPlaylists(userId, username, playlists) {
   const { error: delError } = await delQuery;
   throwIfError(delError, "replaceUserPlaylists:delete");
 
+  await refreshHiddenQuizzes();
   return getUserPlaylists(userId);
 }
 
@@ -308,6 +373,63 @@ async function listQuizzes() {
   return data;
 }
 
+// === Sections Apprendre (regroupent plusieurs parcours entiers) ===
+// Distinct du système de sections-dans-un-parcours (path_type/sections
+// ci-dessus) : une section Apprendre est une entité à part qui RELIE
+// plusieurs parcours (via playlists.learn_section_id), plutôt que de
+// regrouper les quiz internes d'UN SEUL parcours.
+function toPublicLearnSection(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    category: row.category,
+    name: row.name,
+    emoji: row.emoji,
+    unlockThreshold: row.unlock_threshold || { type: "count", value: 1 },
+    sortOrder: Number.isFinite(row.sort_order) ? row.sort_order : 0,
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+  };
+}
+async function listLearnSections() {
+  const { data, error } = await supabase.from("learn_sections").select("*").order("sort_order", { ascending: true });
+  throwIfError(error, "listLearnSections");
+  return (data || []).map(toPublicLearnSection);
+}
+async function createLearnSection(section) {
+  const row = {
+    id: section.id,
+    category: section.category,
+    name: section.name,
+    emoji: section.emoji,
+    unlock_threshold: section.unlockThreshold || { type: "count", value: 1 },
+    sort_order: Number.isFinite(section.sortOrder) ? section.sortOrder : 0,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase.from("learn_sections").insert(row).select().maybeSingle();
+  throwIfError(error, "createLearnSection");
+  return toPublicLearnSection(data);
+}
+async function updateLearnSection(id, patch) {
+  const allowed = {};
+  if (typeof patch.name === "string" && patch.name.trim()) allowed.name = patch.name.trim();
+  if (typeof patch.category === "string") allowed.category = patch.category;
+  if (typeof patch.emoji === "string") allowed.emoji = patch.emoji;
+  if (patch.unlockThreshold && typeof patch.unlockThreshold === "object") allowed.unlock_threshold = patch.unlockThreshold;
+  if (Number.isFinite(patch.sortOrder)) allowed.sort_order = patch.sortOrder;
+  allowed.updated_at = new Date().toISOString();
+  const { data, error } = await supabase.from("learn_sections").update(allowed).eq("id", id).select().maybeSingle();
+  throwIfError(error, "updateLearnSection");
+  return toPublicLearnSection(data);
+}
+async function deleteLearnSection(id) {
+  // Les parcours qui y étaient connectés redeviennent automatiquement
+  // visibles individuellement (learn_section_id repasse à NULL via la
+  // contrainte "on delete set null" posée dans la migration).
+  const { error } = await supabase.from("learn_sections").delete().eq("id", id);
+  throwIfError(error, "deleteLearnSection");
+  return true;
+}
+
 module.exports = {
   supabase,
   getUserById,
@@ -324,8 +446,13 @@ module.exports = {
   listPublicPlaylists,
   listAllPlaylistsAdmin,
   setPlaylistFields,
+  listLearnSections,
+  createLearnSection,
+  updateLearnSection,
+  deleteLearnSection,
   deletePlaylist,
-  getQuizIdsHiddenByOfficialGuidedPlaylists,
+  getQuizIdsInOfficialPlaylists,
+  refreshHiddenQuizzes,
   getUserPlaylists,
   replaceUserPlaylists,
   getQuizById,

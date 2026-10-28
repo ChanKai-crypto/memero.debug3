@@ -35,6 +35,7 @@ function toPublicQuiz(row) {
     instructionLanguage: row.instruction_language || row.language,
     premiumOnly: row.premium_only,
     official: row.official,
+    hidden: !!row.hidden,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

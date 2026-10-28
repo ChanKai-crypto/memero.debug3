@@ -20,24 +20,24 @@ function canEdit(user, quiz) {
 }
 
 // GET /api/quizzes
+// Renvoie TOUS les quiz, y compris ceux "cachés" (membres d'un parcours
+// officiel) avec hidden:true — c'est le client qui décide de ne pas les
+// afficher dans la rubrique Quiz. Surtout ne PAS les retirer de cette
+// réponse : le client déduit d'une absence qu'un quiz a été supprimé et
+// l'efface de son cache, ce qui rendrait le parcours injouable.
 router.get("/", authenticate(false), async (req, res, next) => {
   try {
-    const [rows, hiddenIds] = await Promise.all([
-      db.listQuizzes(),
-      db.getQuizIdsHiddenByOfficialGuidedPlaylists(),
-    ]);
+    const rows = await db.listQuizzes();
     const premium = isPremiumUser(req.user);
 
-    const list = rows
-      .filter((row) => !hiddenIds.has(row.id))
-      .map((row) => {
-        const quiz = toPublicQuiz(row);
-        if (quiz.premiumOnly && !premium) {
-          const { raw, config, ...locked } = quiz;
-          return { ...locked, locked: true };
-        }
-        return { ...quiz, locked: false };
-      });
+    const list = rows.map((row) => {
+      const quiz = toPublicQuiz(row);
+      if (quiz.premiumOnly && !premium) {
+        const { raw, config, ...locked } = quiz;
+        return { ...locked, locked: true };
+      }
+      return { ...quiz, locked: false };
+    });
 
     res.json({ quizzes: list });
   } catch (e) {

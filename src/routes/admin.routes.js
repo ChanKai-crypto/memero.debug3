@@ -117,19 +117,107 @@ router.get("/playlists", async (req, res, next) => {
   }
 });
 
-// PATCH /api/admin/playlists/:id  { official?, guided? }
+// PATCH /api/admin/playlists/:id  { official?, guided?, pathType?, sections?, learnSectionId? }
 router.patch("/playlists/:id", async (req, res, next) => {
   try {
-    const { official, guided } = req.body || {};
+    const { official, guided, pathType, sections, learnSectionId } = req.body || {};
     const patch = {};
     if (typeof official === "boolean") patch.official = official;
     if (typeof guided === "boolean") patch.guided = guided;
+    // Parcours "par sections" (toutes les compétences d'une section
+    // débloquées ensemble, un seuil ouvre la suivante) — réservé à cette
+    // route admin, jamais exposé à la synchronisation normale des
+    // parcours d'un joueur.
+    if (pathType === "linear" || pathType === "sectioned") patch.pathType = pathType;
+    if (Array.isArray(sections)) patch.sections = sections;
+    // Connecte ce parcours à une section Apprendre (string) ou le
+    // déconnecte (null) — un parcours connecté disparaît de l'affichage
+    // individuel et rejoint sa section à la place.
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "learnSectionId")) {
+      patch.learnSectionId = learnSectionId || null;
+    }
     if (!Object.keys(patch).length) {
-      return res.status(400).json({ error: "Au moins un champ 'official' ou 'guided' (booléen) est requis." });
+      return res.status(400).json({ error: "Au moins un champ 'official', 'guided', 'pathType', 'sections' ou 'learnSectionId' est requis." });
     }
     const result = await db.setPlaylistFields(req.params.id, patch);
     if (!result) return res.status(404).json({ error: "Parcours introuvable." });
     res.json(result);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// === Sections Apprendre (regroupent plusieurs parcours entiers) ===
+// Catégories prédéfinies que l'admin peut choisir en créant une section —
+// chacune avec son émoticône fixe ; le nom affiché reste personnalisable.
+const LEARN_SECTION_CATEGORIES = {
+  premiers_pas: "👣",
+  grammaire: "📐",
+  conjugaison: "🔤",
+  vocabulaire: "🏡",
+  politesse: "🤝",
+  ecoute: "👂",
+  lecture: "📖",
+};
+
+// GET /api/admin/learn-sections
+router.get("/learn-sections", async (req, res, next) => {
+  try {
+    const sections = await db.listLearnSections();
+    res.json({ sections, categories: LEARN_SECTION_CATEGORIES });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/admin/learn-sections  { category, name, unlockThreshold?, sortOrder? }
+router.post("/learn-sections", async (req, res, next) => {
+  try {
+    const { category, name, unlockThreshold, sortOrder } = req.body || {};
+    if (!category || !Object.prototype.hasOwnProperty.call(LEARN_SECTION_CATEGORIES, category)) {
+      return res.status(400).json({ error: "Catégorie invalide. Choisis parmi : " + Object.keys(LEARN_SECTION_CATEGORIES).join(", ") });
+    }
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: "Le nom de la section est requis." });
+    }
+    const section = await db.createLearnSection({
+      id: require("crypto").randomUUID(),
+      category,
+      name: String(name).trim(),
+      emoji: LEARN_SECTION_CATEGORIES[category],
+      unlockThreshold: unlockThreshold || { type: "count", value: 1 },
+      sortOrder: Number.isFinite(sortOrder) ? sortOrder : 0,
+    });
+    res.json(section);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// PATCH /api/admin/learn-sections/:id  { name?, category?, unlockThreshold?, sortOrder? }
+router.patch("/learn-sections/:id", async (req, res, next) => {
+  try {
+    const { category } = req.body || {};
+    const patch = { ...req.body };
+    if (category) {
+      if (!Object.prototype.hasOwnProperty.call(LEARN_SECTION_CATEGORIES, category)) {
+        return res.status(400).json({ error: "Catégorie invalide." });
+      }
+      patch.emoji = LEARN_SECTION_CATEGORIES[category];
+    }
+    const section = await db.updateLearnSection(req.params.id, patch);
+    if (!section) return res.status(404).json({ error: "Section introuvable." });
+    res.json(section);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// DELETE /api/admin/learn-sections/:id
+router.delete("/learn-sections/:id", async (req, res, next) => {
+  try {
+    await db.deleteLearnSection(req.params.id);
+    res.json({ ok: true });
   } catch (e) {
     next(e);
   }

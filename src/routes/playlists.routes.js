@@ -17,4 +17,17 @@ router.get("/", async (req, res, next) => {
   }
 });
 
+// GET /api/playlists/learn-sections
+// Public, en lecture seule : la liste des sections Apprendre, pour que
+// l'onglet Learn puisse les afficher. La CRÉATION/modification reste
+// réservée au panneau admin (/api/admin/learn-sections).
+router.get("/learn-sections", async (req, res, next) => {
+  try {
+    const sections = await db.listLearnSections();
+    res.json({ sections });
+  } catch (e) {
+    next(e);
+  }
+});
+
 module.exports = router;

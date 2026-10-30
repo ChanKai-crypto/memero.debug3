@@ -149,6 +149,9 @@ function toPublicPlaylist(row) {
     // Section Apprendre à laquelle ce parcours est connecté (null = pas
     // connecté, s'affiche normalement comme un parcours individuel).
     learnSectionId: row.learn_section_id || null,
+    // Position de ce parcours dans l'affichage de sa section (0 = en
+    // premier) — réglée depuis l'éditeur de mise en page.
+    learnSectionOrder: Number.isFinite(row.learn_section_order) ? row.learn_section_order : 0,
   };
 }
 
@@ -235,6 +238,7 @@ async function setPlaylistFields(playlistId, patch) {
   if (Object.prototype.hasOwnProperty.call(patch, "learnSectionId")) {
     allowed.learn_section_id = patch.learnSectionId || null;
   }
+  if (Number.isFinite(patch.learnSectionOrder)) allowed.learn_section_order = patch.learnSectionOrder;
   allowed.updated_at = new Date().toISOString();
   const { data, error } = await supabase
     .from("playlists")
@@ -284,12 +288,13 @@ async function getUserPlaylists(userId) {
 async function replaceUserPlaylists(userId, username, playlists) {
   const { data: existing, error: fetchErr } = await supabase
     .from("playlists")
-    .select("id, official, path_type, sections, learn_section_id")
+    .select("id, official, path_type, sections, learn_section_id, learn_section_order")
     .eq("owner_id", userId);
   throwIfError(fetchErr, "replaceUserPlaylists:fetchExisting");
   const officialById = {};
   const sectionedById = {};
   const learnSectionById = {};
+  const learnSectionOrderById = {};
   (existing || []).forEach((row) => {
     officialById[row.id] = row.official;
     // Réglage "parcours par sections" : réservé aux admins (panneau
@@ -298,8 +303,9 @@ async function replaceUserPlaylists(userId, username, playlists) {
     // synchronisation classique d'un parcours de ce propriétaire
     // écraserait silencieusement sa configuration par sections.
     sectionedById[row.id] = { pathType: row.path_type, sections: row.sections };
-    // Idem pour la connexion à une section Apprendre.
+    // Idem pour la connexion à une section Apprendre et sa position.
     learnSectionById[row.id] = row.learn_section_id;
+    learnSectionOrderById[row.id] = row.learn_section_order;
   });
 
   const incomingIds = playlists.map((p) => p.id).filter(Boolean);
@@ -325,6 +331,7 @@ async function replaceUserPlaylists(userId, username, playlists) {
           path_type: preserved.pathType || "linear",
           sections: preserved.sections || [],
           learn_section_id: Object.prototype.hasOwnProperty.call(learnSectionById, p.id) ? learnSectionById[p.id] : null,
+          learn_section_order: Object.prototype.hasOwnProperty.call(learnSectionOrderById, p.id) ? (learnSectionOrderById[p.id] || 0) : 0,
         };
       });
     const { error: upsertError } = await supabase.from("playlists").upsert(rows, { onConflict: "id" });
@@ -387,6 +394,9 @@ function toPublicLearnSection(row) {
     emoji: row.emoji,
     unlockThreshold: row.unlock_threshold || { type: "count", value: 1 },
     sortOrder: Number.isFinite(row.sort_order) ? row.sort_order : 0,
+    // Nombre de cases affichées par ligne pour cette section (1 à 3) —
+    // réglé depuis l'éditeur de mise en page du panneau admin.
+    itemsPerRow: Number.isFinite(row.items_per_row) ? row.items_per_row : 2,
     createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
   };
 }
@@ -416,6 +426,7 @@ async function updateLearnSection(id, patch) {
   if (typeof patch.emoji === "string") allowed.emoji = patch.emoji;
   if (patch.unlockThreshold && typeof patch.unlockThreshold === "object") allowed.unlock_threshold = patch.unlockThreshold;
   if (Number.isFinite(patch.sortOrder)) allowed.sort_order = patch.sortOrder;
+  if ([1, 2, 3].includes(patch.itemsPerRow)) allowed.items_per_row = patch.itemsPerRow;
   allowed.updated_at = new Date().toISOString();
   const { data, error } = await supabase.from("learn_sections").update(allowed).eq("id", id).select().maybeSingle();
   throwIfError(error, "updateLearnSection");

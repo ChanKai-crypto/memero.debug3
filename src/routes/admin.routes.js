@@ -120,7 +120,7 @@ router.get("/playlists", async (req, res, next) => {
 // PATCH /api/admin/playlists/:id  { official?, guided?, pathType?, sections?, learnSectionId? }
 router.patch("/playlists/:id", async (req, res, next) => {
   try {
-    const { official, guided, pathType, sections, learnSectionId } = req.body || {};
+    const { official, guided, pathType, sections, learnSectionId, learnSectionOrder } = req.body || {};
     const patch = {};
     if (typeof official === "boolean") patch.official = official;
     if (typeof guided === "boolean") patch.guided = guided;
@@ -136,8 +136,10 @@ router.patch("/playlists/:id", async (req, res, next) => {
     if (Object.prototype.hasOwnProperty.call(req.body || {}, "learnSectionId")) {
       patch.learnSectionId = learnSectionId || null;
     }
+    // Position dans l'affichage de sa section (éditeur de mise en page).
+    if (Number.isFinite(learnSectionOrder)) patch.learnSectionOrder = learnSectionOrder;
     if (!Object.keys(patch).length) {
-      return res.status(400).json({ error: "Au moins un champ 'official', 'guided', 'pathType', 'sections' ou 'learnSectionId' est requis." });
+      return res.status(400).json({ error: "Au moins un champ 'official', 'guided', 'pathType', 'sections', 'learnSectionId' ou 'learnSectionOrder' est requis." });
     }
     const result = await db.setPlaylistFields(req.params.id, patch);
     if (!result) return res.status(404).json({ error: "Parcours introuvable." });
@@ -194,7 +196,7 @@ router.post("/learn-sections", async (req, res, next) => {
   }
 });
 
-// PATCH /api/admin/learn-sections/:id  { name?, category?, unlockThreshold?, sortOrder? }
+// PATCH /api/admin/learn-sections/:id  { name?, category?, unlockThreshold?, sortOrder?, itemsPerRow? }
 router.patch("/learn-sections/:id", async (req, res, next) => {
   try {
     const { category } = req.body || {};

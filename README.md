@@ -132,15 +132,27 @@ Deux façons de faire, et il te faut la première pour que **tout le monde**
 | GET     | `/api/leaderboard?limit=20`      | public            | Classement des joueurs par score cumulé |
 | GET     | `/api/leaderboard/official?limit=50` | public        | Meilleurs scores sur les quiz officiels |
 | GET     | `/api/playlists`                 | public            | Annuaire de tous les parcours marqués publics (tous comptes) |
+| GET     | `/api/playlists/learn-trees`     | public            | Arbres + leurs sections (onglet Arbre) |
+| GET     | `/api/playlists/learn-sections`  | public            | Sections seules |
 | GET     | `/api/admin/users`               | **admin**         | Lister tous les comptes |
 | PATCH   | `/api/admin/users/:id`            | **admin**         | Changer rôle / abonnement / gemmes / bannir |
 | PATCH   | `/api/admin/users/:id/password`   | **admin**         | Réinitialiser le mot de passe d'un compte ("mot de passe oublié") |
 | DELETE  | `/api/admin/users/:id`            | **admin**         | Supprimer un compte |
 | GET     | `/api/admin/quizzes`              | **admin**         | Tous les quiz, y compris Premium |
 | PATCH   | `/api/admin/quizzes/:id`           | **admin**         | Marquer un quiz Officiel/Premium ou non |
+| GET/POST | `/api/admin/learn-trees`         | **admin**         | Lister / créer un arbre `{ name, subject, emoji, color, background }` |
+| PATCH/DELETE | `/api/admin/learn-trees/:id`  | **admin**         | Modifier / supprimer un arbre (supprime ses sections, pas ses parcours) |
+| GET/POST | `/api/admin/learn-sections`      | **admin**         | Lister / créer une section `{ treeId, category, name, emoji? }` |
+| PATCH/DELETE | `/api/admin/learn-sections/:id` | **admin**       | Modifier (dont `treeId` pour changer d'arbre) / supprimer une section |
+| PATCH   | `/api/admin/playlists/:id`         | **admin**         | `{ official?, guided?, learnSectionId?, learnSectionOrder? }` |
 | POST    | `/api/billing/checkout`           | connecté          | Crée une session de paiement Stripe pour un palier d'abonnement |
 | POST    | `/api/billing/portal`             | connecté          | Ouvre le portail Stripe (facture, carte, résiliation) |
 | POST    | `/api/billing/webhook`            | Stripe uniquement | Confirme le paiement et active l'abonnement (jamais appelé par l'app) |
+
+## Arbres (onglet « Arbre » de l'app)
+
+Hiérarchie : **Arbre** (un par thème : sujet + couleur, icône, fond) → **Sections** → **Parcours** → **Quiz** → **Niveaux**.
+À installer une fois : lance `migration-2026-10-arbres.sql` dans Supabase (SQL Editor). Les sections existantes sont rangées dans un premier arbre « Arbre principal ».
 
 ## 6. Stripe (paiement réel des abonnements et des gemmes)
 

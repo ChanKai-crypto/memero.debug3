@@ -141,11 +141,6 @@ function toPublicPlaylist(row) {
     instructionLanguage: row.instruction_language || undefined,
     createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
     owner: row.owner_username || undefined,
-    // Parcours "par sections" (toutes les compétences d'une section sont
-    // débloquées ensemble, un seuil ouvre la section suivante) — voir
-    // supabase-sectioned-playlists-migration.sql pour la forme attendue.
-    pathType: row.path_type || "linear",
-    sections: Array.isArray(row.sections) ? row.sections : [],
     // Section Apprendre à laquelle ce parcours est connecté (null = pas
     // connecté, s'affiche normalement comme un parcours individuel).
     learnSectionId: row.learn_section_id || null,
@@ -226,12 +221,6 @@ async function setPlaylistFields(playlistId, patch) {
   const allowed = {};
   if (typeof patch.official === "boolean") allowed.official = patch.official;
   if (typeof patch.guided === "boolean") allowed.guided = patch.guided;
-  // Réservé au panneau admin (cette fonction n'est jamais appelée par la
-  // synchronisation normale des parcours d'un joueur) : type de parcours
-  // "par sections", où toutes les compétences d'une section sont
-  // débloquées ensemble et un seuil ouvre la section suivante.
-  if (patch.pathType === "linear" || patch.pathType === "sectioned") allowed.path_type = patch.pathType;
-  if (Array.isArray(patch.sections)) allowed.sections = patch.sections;
   // Connecte (ou déconnecte, avec null) ce parcours à une section
   // Apprendre — un parcours connecté disparaît de l'affichage individuel
   // et rejoint sa section à la place.
@@ -380,15 +369,77 @@ async function listQuizzes() {
   return data;
 }
 
-// === Sections Apprendre (regroupent plusieurs parcours entiers) ===
-// Distinct du système de sections-dans-un-parcours (path_type/sections
-// ci-dessus) : une section Apprendre est une entité à part qui RELIE
-// plusieurs parcours (via playlists.learn_section_id), plutôt que de
-// regrouper les quiz internes d'UN SEUL parcours.
+// === Arbres (un par thème : sujet + style visuel) ===
+// Hiérarchie : Arbre → Sections → Parcours → Quiz → Niveaux.
+// Un arbre regroupe des sections (learn_sections.tree_id) ; supprimer un
+// arbre supprime ses sections (on delete cascade), et les parcours de ces
+// sections redeviennent simplement "hors section" (on delete set null).
+function toPublicLearnTree(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    subject: row.subject || "",
+    emoji: row.emoji || "🌳",
+    color: row.color || "#3b82f6",
+    background: row.background || "default",
+    sortOrder: Number.isFinite(row.sort_order) ? row.sort_order : 0,
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+  };
+}
+async function listLearnTrees() {
+  const { data, error } = await supabase.from("learn_trees").select("*").order("sort_order", { ascending: true }).order("created_at", { ascending: true });
+  throwIfError(error, "listLearnTrees");
+  return (data || []).map(toPublicLearnTree);
+}
+async function getLearnTree(id) {
+  const { data, error } = await supabase.from("learn_trees").select("*").eq("id", id).maybeSingle();
+  throwIfError(error, "getLearnTree");
+  return toPublicLearnTree(data);
+}
+async function createLearnTree(tree) {
+  const row = {
+    id: tree.id,
+    name: tree.name,
+    subject: tree.subject || "",
+    emoji: tree.emoji || "🌳",
+    color: tree.color || "#3b82f6",
+    background: tree.background || "default",
+    sort_order: Number.isFinite(tree.sortOrder) ? tree.sortOrder : 0,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase.from("learn_trees").insert(row).select().maybeSingle();
+  throwIfError(error, "createLearnTree");
+  return toPublicLearnTree(data);
+}
+async function updateLearnTree(id, patch) {
+  const allowed = {};
+  if (typeof patch.name === "string" && patch.name.trim()) allowed.name = patch.name.trim();
+  if (typeof patch.subject === "string") allowed.subject = patch.subject.trim();
+  if (typeof patch.emoji === "string" && patch.emoji.trim()) allowed.emoji = patch.emoji.trim();
+  if (typeof patch.color === "string") allowed.color = patch.color;
+  if (typeof patch.background === "string") allowed.background = patch.background;
+  if (Number.isFinite(patch.sortOrder)) allowed.sort_order = patch.sortOrder;
+  allowed.updated_at = new Date().toISOString();
+  const { data, error } = await supabase.from("learn_trees").update(allowed).eq("id", id).select().maybeSingle();
+  throwIfError(error, "updateLearnTree");
+  return toPublicLearnTree(data);
+}
+async function deleteLearnTree(id) {
+  const { error } = await supabase.from("learn_trees").delete().eq("id", id);
+  throwIfError(error, "deleteLearnTree");
+  return true;
+}
+
+// === Sections (regroupent plusieurs parcours entiers, dans un arbre) ===
+// Les anciennes colonnes playlists.path_type / playlists.sections (ancien
+// mode "parcours par sections", supprimé) restent en base mais ne sont
+// plus exposées ni modifiables.
 function toPublicLearnSection(row) {
   if (!row) return null;
   return {
     id: row.id,
+    treeId: row.tree_id || null,
     category: row.category,
     name: row.name,
     emoji: row.emoji,
@@ -408,11 +459,13 @@ async function listLearnSections() {
 async function createLearnSection(section) {
   const row = {
     id: section.id,
+    tree_id: section.treeId || null,
     category: section.category,
     name: section.name,
     emoji: section.emoji,
     unlock_threshold: section.unlockThreshold || { type: "count", value: 1 },
     sort_order: Number.isFinite(section.sortOrder) ? section.sortOrder : 0,
+    items_per_row: [1, 2, 3].includes(section.itemsPerRow) ? section.itemsPerRow : 2,
     updated_at: new Date().toISOString(),
   };
   const { data, error } = await supabase.from("learn_sections").insert(row).select().maybeSingle();
@@ -422,6 +475,7 @@ async function createLearnSection(section) {
 async function updateLearnSection(id, patch) {
   const allowed = {};
   if (typeof patch.name === "string" && patch.name.trim()) allowed.name = patch.name.trim();
+  if (typeof patch.treeId === "string" && patch.treeId) allowed.tree_id = patch.treeId;
   if (typeof patch.category === "string") allowed.category = patch.category;
   if (typeof patch.emoji === "string") allowed.emoji = patch.emoji;
   if (patch.unlockThreshold && typeof patch.unlockThreshold === "object") allowed.unlock_threshold = patch.unlockThreshold;
@@ -457,6 +511,11 @@ module.exports = {
   listPublicPlaylists,
   listAllPlaylistsAdmin,
   setPlaylistFields,
+  listLearnTrees,
+  getLearnTree,
+  createLearnTree,
+  updateLearnTree,
+  deleteLearnTree,
   listLearnSections,
   createLearnSection,
   updateLearnSection,

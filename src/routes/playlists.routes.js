@@ -30,4 +30,16 @@ router.get("/learn-sections", async (req, res, next) => {
   }
 });
 
+// GET /api/playlists/learn-trees
+// Public, en lecture seule : les arbres ET leurs sections en un seul
+// appel, pour que l'onglet Arbre puisse tout afficher.
+router.get("/learn-trees", async (req, res, next) => {
+  try {
+    const [trees, sections] = await Promise.all([db.listLearnTrees(), db.listLearnSections()]);
+    res.json({ trees, sections });
+  } catch (e) {
+    next(e);
+  }
+});
+
 module.exports = router;

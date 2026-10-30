@@ -117,19 +117,13 @@ router.get("/playlists", async (req, res, next) => {
   }
 });
 
-// PATCH /api/admin/playlists/:id  { official?, guided?, pathType?, sections?, learnSectionId? }
+// PATCH /api/admin/playlists/:id  { official?, guided?, learnSectionId?, learnSectionOrder? }
 router.patch("/playlists/:id", async (req, res, next) => {
   try {
-    const { official, guided, pathType, sections, learnSectionId, learnSectionOrder } = req.body || {};
+    const { official, guided, learnSectionId, learnSectionOrder } = req.body || {};
     const patch = {};
     if (typeof official === "boolean") patch.official = official;
     if (typeof guided === "boolean") patch.guided = guided;
-    // Parcours "par sections" (toutes les compétences d'une section
-    // débloquées ensemble, un seuil ouvre la suivante) — réservé à cette
-    // route admin, jamais exposé à la synchronisation normale des
-    // parcours d'un joueur.
-    if (pathType === "linear" || pathType === "sectioned") patch.pathType = pathType;
-    if (Array.isArray(sections)) patch.sections = sections;
     // Connecte ce parcours à une section Apprendre (string) ou le
     // déconnecte (null) — un parcours connecté disparaît de l'affichage
     // individuel et rejoint sa section à la place.
@@ -139,7 +133,7 @@ router.patch("/playlists/:id", async (req, res, next) => {
     // Position dans l'affichage de sa section (éditeur de mise en page).
     if (Number.isFinite(learnSectionOrder)) patch.learnSectionOrder = learnSectionOrder;
     if (!Object.keys(patch).length) {
-      return res.status(400).json({ error: "Au moins un champ 'official', 'guided', 'pathType', 'sections', 'learnSectionId' ou 'learnSectionOrder' est requis." });
+      return res.status(400).json({ error: "Au moins un champ 'official', 'guided', 'learnSectionId' ou 'learnSectionOrder' est requis." });
     }
     const result = await db.setPlaylistFields(req.params.id, patch);
     if (!result) return res.status(404).json({ error: "Parcours introuvable." });
@@ -149,7 +143,83 @@ router.patch("/playlists/:id", async (req, res, next) => {
   }
 });
 
-// === Sections Apprendre (regroupent plusieurs parcours entiers) ===
+// === Arbres (un par thème : sujet + style visuel) ===
+// Fonds proposés pour un arbre (l'app les traduit en dégradés).
+const LEARN_TREE_BACKGROUNDS = ["default", "foret", "ocean", "desert", "nuit", "aurore", "ardoise"];
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+function validateTreeBody(body, partial) {
+  const out = {};
+  const b = body || {};
+  if (b.name !== undefined || !partial) {
+    if (!b.name || !String(b.name).trim()) return { error: "Le nom de l'arbre est requis." };
+    out.name = String(b.name).trim().slice(0, 80);
+  }
+  if (b.subject !== undefined) out.subject = String(b.subject || "").trim().slice(0, 80);
+  if (b.emoji !== undefined) {
+    const e = String(b.emoji || "").trim();
+    if (!e || e.length > 16) return { error: "Icône invalide." };
+    out.emoji = e;
+  }
+  if (b.color !== undefined) {
+    if (!HEX_COLOR.test(String(b.color))) return { error: "Couleur invalide (format #RRGGBB attendu)." };
+    out.color = String(b.color);
+  }
+  if (b.background !== undefined) {
+    if (!LEARN_TREE_BACKGROUNDS.includes(b.background)) return { error: "Fond invalide. Choisis parmi : " + LEARN_TREE_BACKGROUNDS.join(", ") };
+    out.background = b.background;
+  }
+  if (Number.isFinite(b.sortOrder)) out.sortOrder = b.sortOrder;
+  return { patch: out };
+}
+
+// GET /api/admin/learn-trees
+router.get("/learn-trees", async (req, res, next) => {
+  try {
+    const trees = await db.listLearnTrees();
+    res.json({ trees, backgrounds: LEARN_TREE_BACKGROUNDS });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/admin/learn-trees  { name, subject?, emoji?, color?, background?, sortOrder? }
+router.post("/learn-trees", async (req, res, next) => {
+  try {
+    const v = validateTreeBody(req.body, false);
+    if (v.error) return res.status(400).json({ error: v.error });
+    const tree = await db.createLearnTree({ id: require("crypto").randomUUID(), ...v.patch });
+    res.json(tree);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// PATCH /api/admin/learn-trees/:id  { name?, subject?, emoji?, color?, background?, sortOrder? }
+router.patch("/learn-trees/:id", async (req, res, next) => {
+  try {
+    const v = validateTreeBody(req.body, true);
+    if (v.error) return res.status(400).json({ error: v.error });
+    const tree = await db.updateLearnTree(req.params.id, v.patch);
+    if (!tree) return res.status(404).json({ error: "Arbre introuvable." });
+    res.json(tree);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// DELETE /api/admin/learn-trees/:id — supprime aussi ses sections ; les
+// parcours qu'elles contenaient ne sont pas supprimés (juste "hors section").
+router.delete("/learn-trees/:id", async (req, res, next) => {
+  try {
+    await db.deleteLearnTree(req.params.id);
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// === Sections (regroupent plusieurs parcours entiers, dans un arbre) ===
 // Catégories prédéfinies que l'admin peut choisir en créant une section —
 // chacune avec son émoticône fixe ; le nom affiché reste personnalisable.
 const LEARN_SECTION_CATEGORIES = {
@@ -172,10 +242,20 @@ router.get("/learn-sections", async (req, res, next) => {
   }
 });
 
-// POST /api/admin/learn-sections  { category, name, unlockThreshold?, sortOrder? }
+// Icône libre d'une section (remplace celle de la catégorie si fournie) :
+// utile pour les arbres dont le sujet n'est pas une langue.
+function cleanEmoji(v) {
+  const e = String(v || "").trim();
+  return e && e.length <= 16 ? e : null;
+}
+
+// POST /api/admin/learn-sections  { treeId, category, name, emoji?, unlockThreshold?, sortOrder?, itemsPerRow? }
 router.post("/learn-sections", async (req, res, next) => {
   try {
-    const { category, name, unlockThreshold, sortOrder } = req.body || {};
+    const { treeId, category, name, emoji, unlockThreshold, sortOrder, itemsPerRow } = req.body || {};
+    if (!treeId || !(await db.getLearnTree(String(treeId)))) {
+      return res.status(400).json({ error: "Arbre introuvable : choisis l'arbre dans lequel créer la section." });
+    }
     if (!category || !Object.prototype.hasOwnProperty.call(LEARN_SECTION_CATEGORIES, category)) {
       return res.status(400).json({ error: "Catégorie invalide. Choisis parmi : " + Object.keys(LEARN_SECTION_CATEGORIES).join(", ") });
     }
@@ -184,9 +264,11 @@ router.post("/learn-sections", async (req, res, next) => {
     }
     const section = await db.createLearnSection({
       id: require("crypto").randomUUID(),
+      treeId: String(treeId),
       category,
       name: String(name).trim(),
-      emoji: LEARN_SECTION_CATEGORIES[category],
+      emoji: cleanEmoji(emoji) || LEARN_SECTION_CATEGORIES[category],
+      itemsPerRow,
       unlockThreshold: unlockThreshold || { type: "count", value: 1 },
       sortOrder: Number.isFinite(sortOrder) ? sortOrder : 0,
     });
@@ -196,16 +278,26 @@ router.post("/learn-sections", async (req, res, next) => {
   }
 });
 
-// PATCH /api/admin/learn-sections/:id  { name?, category?, unlockThreshold?, sortOrder?, itemsPerRow? }
+// PATCH /api/admin/learn-sections/:id  { treeId?, name?, category?, emoji?, unlockThreshold?, sortOrder?, itemsPerRow? }
 router.patch("/learn-sections/:id", async (req, res, next) => {
   try {
-    const { category } = req.body || {};
+    const { category, emoji, treeId } = req.body || {};
     const patch = { ...req.body };
+    delete patch.emoji;
     if (category) {
       if (!Object.prototype.hasOwnProperty.call(LEARN_SECTION_CATEGORIES, category)) {
         return res.status(400).json({ error: "Catégorie invalide." });
       }
       patch.emoji = LEARN_SECTION_CATEGORIES[category];
+    }
+    if (emoji !== undefined) {
+      const e = cleanEmoji(emoji);
+      if (!e) return res.status(400).json({ error: "Icône invalide." });
+      patch.emoji = e;
+    }
+    if (treeId !== undefined) {
+      if (!treeId || !(await db.getLearnTree(String(treeId)))) return res.status(400).json({ error: "Arbre introuvable." });
+      patch.treeId = String(treeId);
     }
     const section = await db.updateLearnSection(req.params.id, patch);
     if (!section) return res.status(404).json({ error: "Section introuvable." });

@@ -11,6 +11,7 @@ const adminRoutes = require("./routes/admin.routes");
 const leaderboardRoutes = require("./routes/leaderboard.routes");
 const billingRoutes = require("./routes/billing.routes");
 const playlistsRoutes = require("./routes/playlists.routes");
+const dictRoutes = require("./routes/dict.routes");
 
 const app = express();
 
@@ -67,6 +68,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api/billing", billingRoutes);
 app.use("/api/playlists", playlistsRoutes);
+app.use("/api/dict", dictRoutes); // « IA dictionnaire » locale (data/dicts)
 
 // 404 générique pour toute route API inconnue
 app.use("/api", (req, res) => {

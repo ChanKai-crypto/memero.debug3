@@ -10,6 +10,9 @@ function toPublicUser(row) {
     protected: !!row.protected,
     createdAt: row.created_at,
     avatarUrl: row.avatar_url,
+    // Langue du joueur (choisie dans ses Paramètres) : il ne voit que les
+    // quiz, parcours et arbres de cette langue.
+    preferredLanguage: row.preferred_language || "fr",
     banned: row.banned,
     subscription: row.subscription,
     game: row.game,

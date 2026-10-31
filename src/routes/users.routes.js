@@ -31,7 +31,7 @@ router.get("/me", authenticate(true), (req, res) => {
 // PATCH /api/users/me  { email?, avatarUrl? }
 router.patch("/me", authenticate(true), async (req, res, next) => {
   try {
-const { email, avatarUrl } = req.body || {};
+const { email, avatarUrl, preferredLanguage } = req.body || {};
     const patch = {};
 
     if (typeof email === "string") {
@@ -70,6 +70,14 @@ const { email, avatarUrl } = req.body || {};
       patch.avatar_url = avatarUrl || null;
     }
 
+    // Langue du joueur : code ISO de 2 ou 3 lettres (fr, en, fa, ...).
+    if (preferredLanguage !== undefined) {
+      const l = String(preferredLanguage || "").trim().toLowerCase();
+      if (!/^[a-z]{2,3}$/.test(l)) return res.status(400).json({ error: "Langue invalide (code de 2 ou 3 lettres)." });
+      patch.preferred_language = l;
+    }
+
+    if (!Object.keys(patch).length) return res.json({ user: toPublicUser(req.user) });
     const row = await db.updateUser(req.user.id, patch);
     res.json({ user: toPublicUser(row) });
   } catch (e) {

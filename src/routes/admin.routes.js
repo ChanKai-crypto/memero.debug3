@@ -148,7 +148,8 @@ router.patch("/playlists/:id", async (req, res, next) => {
 const LEARN_TREE_BACKGROUNDS = ["default", "foret", "ocean", "desert", "nuit", "aurore", "ardoise"];
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
-const LEARN_TREE_LANGUAGES = ["", "fr", "en", "es", "ru", "zh", "ja", "ar"];
+// Code de langue ISO 639-1 / 639-2 (2 ou 3 lettres), ou "" pour toutes les langues.
+const LEARN_TREE_LANGUAGE_RE = /^([a-z]{2,3})?$/;
 
 function validateTreeBody(body, partial) {
   const out = {};
@@ -174,7 +175,7 @@ function validateTreeBody(body, partial) {
   // Langue des joueurs qui voient cet arbre ("" = toutes les langues).
   if (b.language !== undefined) {
     const l = String(b.language || "");
-    if (!LEARN_TREE_LANGUAGES.includes(l)) return { error: "Langue invalide. Choisis parmi : " + LEARN_TREE_LANGUAGES.filter(Boolean).join(", ") + " (ou vide pour toutes)." };
+    if (!LEARN_TREE_LANGUAGE_RE.test(l)) return { error: "Langue invalide (code de 2 ou 3 lettres, ou vide pour toutes)." };
     out.language = l;
   }
   if (Number.isFinite(b.sortOrder)) out.sortOrder = b.sortOrder;

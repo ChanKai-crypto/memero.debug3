@@ -147,7 +147,21 @@ function toPublicPlaylist(row) {
     // Position de ce parcours dans l'affichage de sa section (0 = en
     // premier) — réglée depuis l'éditeur de mise en page.
     learnSectionOrder: Number.isFinite(row.learn_section_order) ? row.learn_section_order : 0,
+    // Unités personnalisées du parcours (vide = 1 quiz = 1 unité).
+    units: Array.isArray(row.units) ? row.units : [],
   };
+}
+
+// Unités d'un parcours : [{ id, name, items: [{ q: quizId, l: indexDuNiveau }] }]
+function cleanUnits(units) {
+  if (!Array.isArray(units)) return [];
+  return units.slice(0, 60).map((u, i) => ({
+    id: String((u && u.id) || "u" + i).slice(0, 40),
+    name: String((u && u.name) || "").slice(0, 80),
+    items: (Array.isArray(u && u.items) ? u.items : []).slice(0, 400)
+      .filter((it) => it && it.q != null && Number.isFinite(Number(it.l)))
+      .map((it) => ({ q: String(it.q).slice(0, 80), l: Math.max(0, Math.floor(Number(it.l))) })),
+  }));
 }
 
 async function listPublicPlaylists() {
@@ -290,15 +304,26 @@ async function getUserPlaylists(userId) {
 // toujours la valeur déjà en base, uniquement modifiable par l'admin via
 // setPlaylistFields.
 async function replaceUserPlaylists(userId, username, playlists) {
-  const { data: existing, error: fetchErr } = await supabase
+  // La colonne « units » arrive avec migration-2026-11-unites-parcours.sql :
+  // tant qu'elle n'existe pas, on continue de synchroniser sans elle.
+  let hasUnits = true;
+  let { data: existing, error: fetchErr } = await supabase
     .from("playlists")
-    .select("id, official, path_type, sections, learn_section_id, learn_section_order")
+    .select("id, official, path_type, sections, learn_section_id, learn_section_order, units")
     .eq("owner_id", userId);
+  if (fetchErr && /units/i.test(fetchErr.message || "")) {
+    hasUnits = false;
+    ({ data: existing, error: fetchErr } = await supabase
+      .from("playlists")
+      .select("id, official, path_type, sections, learn_section_id, learn_section_order")
+      .eq("owner_id", userId));
+  }
   throwIfError(fetchErr, "replaceUserPlaylists:fetchExisting");
   const officialById = {};
   const sectionedById = {};
   const learnSectionById = {};
   const learnSectionOrderById = {};
+  const unitsById = {};
   (existing || []).forEach((row) => {
     officialById[row.id] = row.official;
     // Réglage "parcours par sections" : réservé aux admins (panneau
@@ -310,6 +335,7 @@ async function replaceUserPlaylists(userId, username, playlists) {
     // Idem pour la connexion à une section Apprendre et sa position.
     learnSectionById[row.id] = row.learn_section_id;
     learnSectionOrderById[row.id] = row.learn_section_order;
+    unitsById[row.id] = row.units;
   });
 
   const incomingIds = playlists.map((p) => p.id).filter(Boolean);
@@ -330,6 +356,7 @@ async function replaceUserPlaylists(userId, username, playlists) {
           official: Object.prototype.hasOwnProperty.call(officialById, p.id) ? !!officialById[p.id] : false,
           language: p.language || null,
           instruction_language: p.instructionLanguage || null,
+          ...(hasUnits ? { units: Array.isArray(p.units) ? cleanUnits(p.units) : (unitsById[p.id] || []) } : {}),
           created_at: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
           updated_at: new Date().toISOString(),
           path_type: preserved.pathType || "linear",

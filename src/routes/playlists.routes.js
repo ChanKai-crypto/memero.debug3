@@ -31,12 +31,13 @@ router.get("/learn-sections", async (req, res, next) => {
 });
 
 // GET /api/playlists/learn-trees
-// Public, en lecture seule : les arbres ET leurs sections en un seul
-// appel, pour que l'onglet Arbre puisse tout afficher.
+// Public, en lecture seule : les arbres, leurs sections ET les parcours
+// rangés dans ces sections (y compris privés), en un seul appel, pour que
+// l'onglet Apprendre puisse tout afficher.
 router.get("/learn-trees", async (req, res, next) => {
   try {
-    const [trees, sections] = await Promise.all([db.listLearnTrees(), db.listLearnSections()]);
-    res.json({ trees, sections });
+    const [trees, sections, playlists] = await Promise.all([db.listLearnTrees(), db.listLearnSections(), db.listLearnPlaylists()]);
+    res.json({ trees, sections, playlists });
   } catch (e) {
     next(e);
   }

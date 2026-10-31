@@ -148,6 +148,8 @@ router.patch("/playlists/:id", async (req, res, next) => {
 const LEARN_TREE_BACKGROUNDS = ["default", "foret", "ocean", "desert", "nuit", "aurore", "ardoise"];
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
+const LEARN_TREE_LANGUAGES = ["", "fr", "en", "es", "ru", "zh", "ja", "ar"];
+
 function validateTreeBody(body, partial) {
   const out = {};
   const b = body || {};
@@ -168,6 +170,12 @@ function validateTreeBody(body, partial) {
   if (b.background !== undefined) {
     if (!LEARN_TREE_BACKGROUNDS.includes(b.background)) return { error: "Fond invalide. Choisis parmi : " + LEARN_TREE_BACKGROUNDS.join(", ") };
     out.background = b.background;
+  }
+  // Langue des joueurs qui voient cet arbre ("" = toutes les langues).
+  if (b.language !== undefined) {
+    const l = String(b.language || "");
+    if (!LEARN_TREE_LANGUAGES.includes(l)) return { error: "Langue invalide. Choisis parmi : " + LEARN_TREE_LANGUAGES.filter(Boolean).join(", ") + " (ou vide pour toutes)." };
+    out.language = l;
   }
   if (Number.isFinite(b.sortOrder)) out.sortOrder = b.sortOrder;
   return { patch: out };

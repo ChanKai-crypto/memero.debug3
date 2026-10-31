@@ -205,6 +205,21 @@ async function refreshHiddenQuizzes() {
 
 // Vue admin : TOUS les parcours (y compris privés), avec le pseudo du
 // propriétaire — utilisé par le panneau d'administration.
+// Parcours affichés dans l'onglet Apprendre : tous les parcours officiels
+// rangés dans une section, MÊME s'ils sont privés — c'est l'admin qui les a
+// placés là, ils doivent donc être visibles par tous les joueurs (sinon un
+// parcours privé de l'admin n'apparaîtrait jamais dans Apprendre).
+async function listLearnPlaylists() {
+  const { data, error } = await supabase
+    .from("playlists")
+    .select("*")
+    .eq("official", true)
+    .not("learn_section_id", "is", null)
+    .order("learn_section_order", { ascending: true });
+  throwIfError(error, "listLearnPlaylists");
+  return (data || []).map(toPublicPlaylist);
+}
+
 async function listAllPlaylistsAdmin() {
   const { data, error } = await supabase
     .from("playlists")
@@ -383,6 +398,7 @@ function toPublicLearnTree(row) {
     emoji: row.emoji || "🌳",
     color: row.color || "#3b82f6",
     background: row.background || "default",
+    language: row.language || "",
     sortOrder: Number.isFinite(row.sort_order) ? row.sort_order : 0,
     createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
   };
@@ -408,6 +424,9 @@ async function createLearnTree(tree) {
     sort_order: Number.isFinite(tree.sortOrder) ? tree.sortOrder : 0,
     updated_at: new Date().toISOString(),
   };
+  // Langue des joueurs (colonne ajoutée par migration-2026-10-langue-arbres.sql) :
+  // envoyée seulement si elle est renseignée.
+  if (tree.language) row.language = tree.language;
   const { data, error } = await supabase.from("learn_trees").insert(row).select().maybeSingle();
   throwIfError(error, "createLearnTree");
   return toPublicLearnTree(data);
@@ -419,6 +438,7 @@ async function updateLearnTree(id, patch) {
   if (typeof patch.emoji === "string" && patch.emoji.trim()) allowed.emoji = patch.emoji.trim();
   if (typeof patch.color === "string") allowed.color = patch.color;
   if (typeof patch.background === "string") allowed.background = patch.background;
+  if (typeof patch.language === "string") allowed.language = patch.language;
   if (Number.isFinite(patch.sortOrder)) allowed.sort_order = patch.sortOrder;
   allowed.updated_at = new Date().toISOString();
   const { data, error } = await supabase.from("learn_trees").update(allowed).eq("id", id).select().maybeSingle();
@@ -512,6 +532,7 @@ module.exports = {
   listAllPlaylistsAdmin,
   setPlaylistFields,
   listLearnTrees,
+  listLearnPlaylists,
   getLearnTree,
   createLearnTree,
   updateLearnTree,

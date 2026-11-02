@@ -10,21 +10,19 @@ function frontendUrl() {
   return (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
 }
 
-// POST /api/billing/checkout   { tier: "bas" | "standard" | "plus" }
+// POST /api/billing/checkout   { tier: "bas" | "standard" | "plus", interval: "month" | "year" (défaut) }
 // Crée une session de paiement Stripe et renvoie son URL : le client doit
 // rediriger le navigateur vers cette URL (window.location.href = url).
 // Rien n'est activé ici — c'est le webhook plus bas qui confirme le paiement.
 //
-// ⚠️ Temporairement réservé aux administrateurs (requireAdmin) : les
-// transactions réelles (abonnements et packs de gemmes) ne sont pas encore
-// ouvertes à tout le monde. Retire "requireAdmin" ci-dessous quand tu seras
-// prêt à ouvrir les paiements à tous les comptes.
-router.post("/checkout", authenticate(true), requireAdmin, async (req, res, next) => {
+// Ouvert à tous les comptes connectés (authenticate(true) : il faut un compte).
+router.post("/checkout", authenticate(true), async (req, res, next) => {
   try {
     if (!stripe) return res.status(503).json({ error: "Paiement non configuré côté serveur (STRIPE_SECRET_KEY manquante)." });
 
     const { tier } = req.body || {};
-    const priceId = priceIdForTier(tier);
+    const interval = (req.body && req.body.interval) === "month" ? "month" : "year";
+    const priceId = priceIdForTier(tier, interval);
     if (!priceId) {
       return res.status(400).json({ error: "Palier d'abonnement invalide ou non configuré (STRIPE_PRICE_...)." });
     }
@@ -45,7 +43,7 @@ router.post("/checkout", authenticate(true), requireAdmin, async (req, res, next
       client_reference_id: req.user.id,
       line_items: [{ price: priceId, quantity: 1 }],
       subscription_data: {
-        metadata: { memero_user_id: req.user.id, memero_tier: tier },
+        metadata: { memero_user_id: req.user.id, memero_tier: tier, memero_interval: interval },
       },
       success_url: `${frontendUrl()}/?checkout=success`,
       cancel_url: `${frontendUrl()}/?checkout=cancel`,
@@ -66,10 +64,8 @@ router.post("/checkout", authenticate(true), requireAdmin, async (req, res, next
 // POST /api/billing/checkout-gems   { packId: "petit" | "moyen" | "grand" | "mega" }
 // Comme /checkout, mais en paiement unique (mode "payment", pas "subscription") :
 // achat ponctuel d'un pack de gemmes, pas un abonnement récurrent.
-//
-// ⚠️ Temporairement réservé aux administrateurs (requireAdmin), voir la
-// note au-dessus de /checkout.
-router.post("/checkout-gems", authenticate(true), requireAdmin, async (req, res, next) => {
+// Ouvert à tous les comptes connectés.
+router.post("/checkout-gems", authenticate(true), async (req, res, next) => {
   try {
     if (!stripe) return res.status(503).json({ error: "Paiement non configuré côté serveur (STRIPE_SECRET_KEY manquante)." });
 

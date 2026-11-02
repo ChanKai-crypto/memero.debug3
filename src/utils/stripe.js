@@ -18,21 +18,27 @@ if (!STRIPE_SECRET_KEY) {
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
-/** tier ("bas" | "standard" | "plus") -> ID du Price Stripe correspondant. */
-function priceIdForTier(tier) {
-  const map = {
-    bas: process.env.STRIPE_PRICE_BAS,
-    standard: process.env.STRIPE_PRICE_STANDARD,
-    plus: process.env.STRIPE_PRICE_PLUS,
-  };
-  return map[tier] || null;
+/**
+ * tier interne + interval ("year" | "month") -> ID du Price Stripe.
+ * Les codes internes restent "bas" / "standard" / "plus" (enregistrés dans
+ * les comptes), mais les variables Render portent les noms commerciaux :
+ *   bas      = Memerro Plus  -> STRIPE_PRICE_PLUS_MONTHLY  / STRIPE_PRICE_PLUS_YEARLY
+ *   standard = Memerro Max   -> STRIPE_PRICE_MAX_MONTHLY   / STRIPE_PRICE_MAX_YEARLY
+ *   plus     = Memerro Ultra -> STRIPE_PRICE_ULTRA_MONTHLY / STRIPE_PRICE_ULTRA_YEARLY
+ */
+const TIER_ENV = { bas: "PLUS", standard: "MAX", plus: "ULTRA" };
+function priceIdForTier(tier, interval) {
+  const name = TIER_ENV[tier];
+  if (!name) return null;
+  return process.env["STRIPE_PRICE_" + name + (interval === "month" ? "_MONTHLY" : "_YEARLY")] || null;
 }
 
-/** ID du Price Stripe -> tier ("bas" | "standard" | "plus" | null). */
+/** ID du Price Stripe (mensuel OU annuel) -> tier ("bas" | "standard" | "plus" | null). */
 function tierForPriceId(priceId) {
-  if (priceId === process.env.STRIPE_PRICE_BAS) return "bas";
-  if (priceId === process.env.STRIPE_PRICE_STANDARD) return "standard";
-  if (priceId === process.env.STRIPE_PRICE_PLUS) return "plus";
+  if (!priceId) return null;
+  for (const tier of ["bas", "standard", "plus"]) {
+    if (priceId === priceIdForTier(tier, "year") || priceId === priceIdForTier(tier, "month")) return tier;
+  }
   return null;
 }
 
@@ -48,7 +54,7 @@ const GEM_PACKS = {
   petit: { gems: 500, envVar: "STRIPE_PRICE_GEMS_PETIT" },
   moyen: { gems: 1200, envVar: "STRIPE_PRICE_GEMS_MOYEN" },
   grand: { gems: 3000, envVar: "STRIPE_PRICE_GEMS_GRAND" },
-  mega: { gems: 7000, envVar: "STRIPE_PRICE_GEMS_MEGA" },
+  mega: { gems: 6500, envVar: "STRIPE_PRICE_GEMS_MEGA" },
 };
 
 /** id de pack ("petit"|"moyen"|"grand"|"mega") -> ID du Price Stripe. */

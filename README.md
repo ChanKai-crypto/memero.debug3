@@ -159,8 +159,8 @@ Hiérarchie : **Arbre** (un par thème : sujet + couleur, icône, fond) → **Se
 1. Crée un compte sur [stripe.com](https://stripe.com) (mode **Test** pour essayer sans vrai argent).
 2. **Developers → API keys** → copie la **Secret key** dans `STRIPE_SECRET_KEY`.
 3. Crée 3 **Products** (Premium bas / standard / plus), chacun avec un **Price**
-   récurrent mensuel. Copie chaque ID (`price_...`) dans `STRIPE_PRICE_BAS`,
-   `STRIPE_PRICE_STANDARD`, `STRIPE_PRICE_PLUS`.
+   récurrent mensuel. Copie chaque ID (`price_...`) dans `STRIPE_PRICE_PLUS_MONTHLY` / `_YEARLY`
+   (Memerro Plus), `STRIPE_PRICE_MAX_…` (Max) et `STRIPE_PRICE_ULTRA_…` (Ultra).
 4. **Pour les packs de gemmes** (achat ponctuel dans la boutique, pas un
    abonnement) : crée 4 **Products** supplémentaires (un par pack), chacun
    avec un **Price** — décoche bien **"Recurring"** cette fois (paiement

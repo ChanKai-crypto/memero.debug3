@@ -49,8 +49,16 @@ async function getUserAvatarByUsername(username) {
 }
 
 async function getUserByEmail(email) {
-  const { data, error } = await supabase.from("users").select("*").ilike("email", email).maybeSingle();
+  // Plusieurs comptes avec la même adresse (anciens doublons) : on prend le
+  // plus ancien au lieu de planter (« JSON object requested, multiple rows »).
+  const { data: rows, error } = await supabase
+    .from("users")
+    .select("*")
+    .ilike("email", email)
+    .order("created_at", { ascending: true })
+    .limit(1);
   throwIfError(error, "getUserByEmail");
+  const data = (rows && rows[0]) || null;
   return data;
 }
 
@@ -149,7 +157,28 @@ function toPublicPlaylist(row) {
     learnSectionOrder: Number.isFinite(row.learn_section_order) ? row.learn_section_order : 0,
     // Unités personnalisées du parcours (vide = 1 quiz = 1 unité).
     units: Array.isArray(row.units) ? row.units : [],
+    // Types de questions imposés par le parcours (null = types d'origine)
+    questionTypes: row.question_types && typeof row.question_types === "object" ? row.question_types : undefined,
   };
+}
+
+// Types de questions d'un parcours : {mode:"single", format} | {mode:"mix", formats, weights}
+const QT_FORMATS = ["pairs", "classic", "classic4", "classic3", "flashcard", "truefalse", "textfind", "puzzle", "blank", "match"];
+const QT_MIX = ["auto", "flashcard", "truefalse", "textfind", "puzzle", "blank", "match"];
+function cleanQuestionTypes(qt) {
+  if (!qt || typeof qt !== "object") return null;
+  if (qt.mode === "single" && QT_FORMATS.includes(qt.format)) return { mode: "single", format: qt.format };
+  if (qt.mode === "mix" && Array.isArray(qt.formats)) {
+    const formats = qt.formats.filter((f, i, a) => QT_MIX.includes(f) && a.indexOf(f) === i);
+    if (!formats.length) return null;
+    const weights = {};
+    formats.forEach((f) => {
+      const w = Number(qt.weights && qt.weights[f]);
+      weights[f] = Number.isFinite(w) ? Math.max(0, Math.min(100, w)) : 50;
+    });
+    return { mode: "mix", formats, weights };
+  }
+  return null;
 }
 
 // Unités d'un parcours : [{ id, name, items: [{ q: quizId, l: indexDuNiveau }] }]
@@ -357,6 +386,7 @@ async function replaceUserPlaylists(userId, username, playlists) {
           language: p.language || null,
           instruction_language: p.instructionLanguage || null,
           ...(hasUnits ? { units: Array.isArray(p.units) ? cleanUnits(p.units) : (unitsById[p.id] || []) } : {}),
+          question_types: cleanQuestionTypes(p.questionTypes),
           created_at: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
           updated_at: new Date().toISOString(),
           path_type: preserved.pathType || "linear",
@@ -365,7 +395,13 @@ async function replaceUserPlaylists(userId, username, playlists) {
           learn_section_order: Object.prototype.hasOwnProperty.call(learnSectionOrderById, p.id) ? (learnSectionOrderById[p.id] || 0) : 0,
         };
       });
-    const { error: upsertError } = await supabase.from("playlists").upsert(rows, { onConflict: "id" });
+    let { error: upsertError } = await supabase.from("playlists").upsert(rows, { onConflict: "id" });
+    // Colonne « question_types » pas encore créée (migration-2026-11-skins-coffres.sql) :
+    // on synchronise quand même, sans ce champ.
+    if (upsertError && /question_types/i.test(upsertError.message || "")) {
+      rows.forEach((r) => delete r.question_types);
+      ({ error: upsertError } = await supabase.from("playlists").upsert(rows, { onConflict: "id" }));
+    }
     throwIfError(upsertError, "replaceUserPlaylists:upsert");
   }
 

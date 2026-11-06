@@ -162,7 +162,9 @@ router.post("/webhook", async (req, res) => {
             if (user) {
               const currentGems = (user.game && Number.isFinite(user.game.gems)) ? user.game.gems : 0;
               await db.updateUser(userId, {
-                game: { ...user.game, gems: currentGems + gemsToAdd },
+                // rev + 1 : le site saura que ses gemmes locales sont périmées
+                // et ne pourra plus écraser les gemmes tout juste achetées.
+                game: { ...user.game, gems: currentGems + gemsToAdd, rev: (Number.isFinite(user.game && user.game.rev) ? user.game.rev : 0) + 1 },
               });
             }
           }

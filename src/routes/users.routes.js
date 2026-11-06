@@ -4,6 +4,8 @@ const authenticate = require("../middleware/authenticate");
 const { toPublicUser } = require("../utils/mappers");
 const { hashPassword, verifyPassword } = require("../utils/auth");
 const { sendVerificationEmail, generateCode } = require("../utils/email");
+const requireAdmin = require("../middleware/requireAdmin");
+const G = require("../utils/game");
 
 const router = express.Router();
 
@@ -100,6 +102,17 @@ const { email, avatarUrl, preferredLanguage } = req.body || {};
 // ajouts répétés dans les limites), seulement le cas extrême d'un bond.
 const MAX_GEMS_DELTA_PER_SYNC = 5000; // largement au-dessus de ce qu'une vraie partie peut rapporter
 const MAX_SCORE_DELTA_PER_SYNC = 2_000_000_000; // aligné sur le plafond de score le plus haut (Expert)
+// Numéro de version de l'état de jeu : augmente à CHAQUE changement fait
+// par le serveur lui-même (achat de gemmes via Stripe, coffre ouvert,
+// coffre journalier, fond acheté…). Si le site renvoie un état basé sur
+// une version plus ancienne, ses gemmes / coffres / objets sont ignorés
+// (sinon il écraserait, par exemple, des gemmes tout juste achetées).
+function bumpRev(game) {
+  game.rev = (Number.isFinite(game.rev) ? game.rev : 0) + 1;
+  return game;
+}
+const MAX_ITEMS_DELTA_PER_SYNC = 10; // multiplicateurs / jokers achetés en boutique entre deux synchronisations
+
 router.patch("/me/game", authenticate(true), async (req, res, next) => {
   try {
     const {
@@ -110,20 +123,21 @@ router.patch("/me/game", authenticate(true), async (req, res, next) => {
       inventory,
       chestsUnlocked,
       chestsPending,
-      // Compteurs du cycle quotidien/hebdomadaire des coffres (anti-farming
-      // multi-appareils) : le client les envoyait déjà, mais cette route
-      // les ignorait silencieusement — rien n'était jamais sauvegardé côté
-      // serveur, donc la limite ne protégeait en réalité QUE l'appareil
-      // en cours. Désormais pris en compte comme le reste de l'état de jeu.
       chestDailyCounts,
       chestWeeklyLegendary,
+      levelProgress,
+      playlistProgress,
       stats,
+      rev,
     } = req.body || {};
     const current = req.user;
     const game = { ...current.game };
     let anomalyDetected = false;
+    const serverRev = Number.isFinite(game.rev) ? game.rev : 0;
+    // rev absent = ancien site : on reste tolérant (comportement d'avant)
+    const stale = typeof rev === "number" && rev < serverRev;
 
-    if (typeof gems === "number") {
+    if (typeof gems === "number" && !stale) {
       const nextGems = Math.max(0, Math.round(gems));
       const currentGems = Number.isFinite(game.gems) ? game.gems : 0;
       if (nextGems - currentGems > MAX_GEMS_DELTA_PER_SYNC) {
@@ -151,17 +165,138 @@ router.patch("/me/game", authenticate(true), async (req, res, next) => {
         game.lifetimeScore = nextScore;
       }
     }
-    if (inventory && typeof inventory === "object") game.inventory = { ...game.inventory, ...inventory };
-    if (Array.isArray(chestsUnlocked)) game.chestsUnlocked = chestsUnlocked;
-    if (Array.isArray(chestsPending)) game.chestsPending = chestsPending;
+    // Objets : les fonds d'écran ne s'obtiennent QUE par le serveur (coffres,
+    // boutique) ; multiplicateurs/jokers : hausse limitée par synchronisation.
+    if (inventory && typeof inventory === "object" && !stale) {
+      const inv = { ...(game.inventory || {}) };
+      ["multiplier", "joker"].forEach((k) => {
+        if (!Number.isFinite(inventory[k])) return;
+        const cur = Number.isFinite(inv[k]) ? inv[k] : 0;
+        const next = Math.max(0, Math.round(inventory[k]));
+        inv[k] = Math.min(next, cur + MAX_ITEMS_DELTA_PER_SYNC);
+      });
+      game.inventory = inv;
+    }
+    // Coffres : plafonds vérifiés ici, toutes sources confondues.
+    if (Array.isArray(chestsPending) && !stale) {
+      const r = G.reconcilePending(game, chestsPending, chestsUnlocked, Number.isFinite(game.lifetimeScore) ? game.lifetimeScore : 0, new Date());
+      game.chestsPending = r.pending;
+      game.chestLedger = r.ledger;
+      game.chestsUnlocked = r.unlocked;
+      if (r.refused > 0) console.warn(`[coffres] ${r.refused} coffre(s) refusé(s) (plafond atteint) pour ${current.username}`);
+    }
     if (chestDailyCounts && typeof chestDailyCounts === "object") game.chestDailyCounts = chestDailyCounts;
     if (chestWeeklyLegendary && typeof chestWeeklyLegendary === "object") game.chestWeeklyLegendary = chestWeeklyLegendary;
+    // Progression (niveaux, parcours) : n'était jamais enregistrée avant.
+    if (levelProgress && typeof levelProgress === "object" && JSON.stringify(levelProgress).length < 400000) game.levelProgress = levelProgress;
+    if (playlistProgress && typeof playlistProgress === "object" && JSON.stringify(playlistProgress).length < 100000) game.playlistProgress = playlistProgress;
 
     const patch = { game };
     if (stats && typeof stats === "object") patch.stats = { ...current.stats, ...stats };
 
     const row = await db.updateUser(req.user.id, patch);
-    res.json({ user: toPublicUser(row), anomalyDetected });
+    res.json({ user: toPublicUser(row), anomalyDetected, staleRev: stale });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/users/me/daily-chest
+// Coffre journalier calculé par le serveur (heure de Paris) : coffre de
+// base le 1er jour, coffre RARE à partir de 2 jours d'affilée, et aucun
+// coffre le jour où l'on revient après avoir manqué un jour.
+router.post("/me/daily-chest", authenticate(true), async (req, res, next) => {
+  try {
+    const game = { ...req.user.game };
+    const d = G.evaluateDailyChest(game, new Date());
+    if (d.already) return res.json({ result: null, run: d.state.run || 0, user: toPublicUser(req.user) });
+    game.dailyChest = d.state;
+    if (d.result === "base" || d.result === "rare") {
+      const pending = Array.isArray(game.chestsPending) ? game.chestsPending.slice() : [];
+      pending.push(d.result);
+      game.chestsPending = pending.slice(0, 60);
+    }
+    bumpRev(game);
+    const row = await db.updateUser(req.user.id, { game });
+    res.json({ result: d.result, run: d.run, user: toPublicUser(row) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/users/me/chests/open  { tier }
+// Ouvre un coffre EN ATTENTE : c'est le serveur qui tire les gemmes, les
+// objets et l'éventuel fond d'écran (jamais un fond déjà possédé).
+router.post("/me/chests/open", authenticate(true), async (req, res, next) => {
+  try {
+    const tier = String((req.body && req.body.tier) || "");
+    if (!G.CHEST_TIERS.includes(tier)) return res.status(400).json({ error: "Coffre invalide." });
+    const game = { ...req.user.game };
+    const pending = Array.isArray(game.chestsPending) ? game.chestsPending.slice() : [];
+    const idx = pending.indexOf(tier);
+    if (idx === -1) return res.status(409).json({ error: "Tu n'as pas ce coffre.", user: toPublicUser(req.user) });
+    pending.splice(idx, 1);
+    const owned = G.ownedSkins(game);
+    const r = G.openChestRewards(tier, G.activeTier(req.user), owned);
+    const inv = { ...(game.inventory || {}) };
+    r.items.forEach((it) => {
+      inv[it.kind] = (Number.isFinite(inv[it.kind]) ? inv[it.kind] : 0) + it.n;
+    });
+    if (r.skin) inv.skins = owned.concat([r.skin]);
+    game.inventory = inv;
+    game.gems = (Number.isFinite(game.gems) ? game.gems : 0) + r.gems;
+    game.chestsPending = pending;
+    bumpRev(game);
+    const row = await db.updateUser(req.user.id, { game });
+    res.json({ result: { gems: r.gems, items: r.items, skin: r.skin }, user: toPublicUser(row) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// GET /api/users/skins/today  (public) : les fonds en vente aujourd'hui
+router.get("/skins/today", (req, res) => {
+  res.json({ day: G.dayIndex(new Date()), skins: G.skinsOfDay(new Date()).map((s) => ({ id: s.id, rarity: s.r, price: G.RARITY[s.r].price })) });
+});
+
+// POST /api/users/me/skins/buy  { skinId }
+router.post("/me/skins/buy", authenticate(true), async (req, res, next) => {
+  try {
+    const id = String((req.body && req.body.skinId) || "");
+    const skin = G.SKIN_BY_ID[id];
+    if (!skin) return res.status(400).json({ error: "Fond inconnu." });
+    if (!G.skinsOfDay(new Date()).some((s) => s.id === id)) return res.status(409).json({ error: "Ce fond n'est pas en vente aujourd'hui." });
+    const game = { ...req.user.game };
+    const owned = G.ownedSkins(game);
+    if (owned.indexOf(id) !== -1) return res.status(409).json({ error: "Tu as déjà ce fond.", user: toPublicUser(req.user) });
+    const price = G.RARITY[skin.r].price;
+    const gems = Number.isFinite(game.gems) ? game.gems : 0;
+    if (gems < price) return res.status(402).json({ error: "Pas assez de gemmes.", user: toPublicUser(req.user) });
+    game.gems = gems - price;
+    game.inventory = { ...(game.inventory || {}), skins: owned.concat([id]) };
+    bumpRev(game);
+    const row = await db.updateUser(req.user.id, { game });
+    res.json({ ok: true, skinId: id, user: toPublicUser(row) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/users/me/skins/init  { current }
+// Une seule fois par compte : les fonds de départ, plus le fond que le
+// joueur utilisait déjà (parmi les 8 anciens fonds gratuits).
+router.post("/me/skins/init", authenticate(true), async (req, res, next) => {
+  try {
+    const game = { ...req.user.game };
+    if (game.skinsInit) return res.json({ user: toPublicUser(req.user) });
+    const owned = G.ownedSkins(game);
+    const cur = String((req.body && req.body.current) || "");
+    if (G.LEGACY_SKINS.indexOf(cur) !== -1 && owned.indexOf(cur) === -1) owned.push(cur);
+    game.inventory = { ...(game.inventory || {}), skins: owned };
+    game.skinsInit = true;
+    bumpRev(game);
+    const row = await db.updateUser(req.user.id, { game });
+    res.json({ user: toPublicUser(row) });
   } catch (e) {
     next(e);
   }
@@ -170,7 +305,10 @@ router.patch("/me/game", authenticate(true), async (req, res, next) => {
 // POST /api/users/me/subscribe  { tier: "bas"|"standard"|"plus"|"free" }
 // ⚠️ DÉMO SANS PAIEMENT : voir README, section "Aller plus loin" pour
 // brancher une vraie vérification Google Play Billing / Stripe.
-router.post("/me/subscribe", authenticate(true), async (req, res, next) => {
+// ⚠️ Réservé aux ADMINS : sans ça, n'importe qui pouvait s'offrir
+// Memerro Ultra gratuitement avec un simple appel à l'API. Les vrais
+// abonnements passent par Stripe (/api/billing/checkout + webhook).
+router.post("/me/subscribe", authenticate(true), requireAdmin, async (req, res, next) => {
   try {
     const { tier } = req.body || {};
     if (!VALID_TIERS.includes(tier)) {
@@ -237,6 +375,15 @@ router.put("/me/playlists", authenticate(true), async (req, res, next) => {
     const { playlists } = req.body || {};
     if (!Array.isArray(playlists)) {
       return res.status(400).json({ error: "playlists doit être un tableau." });
+    }
+    // Limite par abonnement : gratuit 4, Plus/Max 40, Ultra illimité.
+    // On ne supprime jamais rien : on refuse seulement d'en AJOUTER au-delà.
+    const limit = G.playlistLimitFor(req.user);
+    if (playlists.length > limit) {
+      const existing = await db.getUserPlaylists(req.user.id);
+      if (playlists.length > Math.max(limit, existing.length)) {
+        return res.status(403).json({ error: `Limite de ${limit} parcours atteinte pour ton abonnement.`, limit });
+      }
     }
     const updated = await db.replaceUserPlaylists(req.user.id, req.user.username, playlists);
     res.json({ playlists: updated });

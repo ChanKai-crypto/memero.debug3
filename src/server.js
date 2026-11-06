@@ -55,7 +55,7 @@ app.use("/api/auth", authLimiter);
 // la dernière version livrée (au lieu de deviner) — ouvre simplement
 // https://ton-service.onrender.com/api/health dans un navigateur et
 // compare "backendVersion" à la valeur indiquée dans la réponse de Claude.
-const BACKEND_VERSION = "2026-09-28-1";
+const BACKEND_VERSION = "2026-11-07-1";
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, service: "memero-backend", backendVersion: BACKEND_VERSION, time: new Date().toISOString() });

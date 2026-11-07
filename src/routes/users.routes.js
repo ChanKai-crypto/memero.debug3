@@ -101,8 +101,46 @@ const { email, avatarUrl, preferredLanguage } = req.body || {};
 // rejet silencieux, et l'incident est journalisé côté serveur pour qu'un
 // admin puisse le repérer. Ça n'empêche pas un grignotage lent (petits
 // ajouts répétés dans les limites), seulement le cas extrême d'un bond.
-const MAX_GEMS_DELTA_PER_SYNC = 5000; // largement au-dessus de ce qu'une vraie partie peut rapporter
-const MAX_SCORE_DELTA_PER_SYNC = 2_000_000_000; // aligné sur le plafond de score le plus haut (Expert)
+/* ---------------------------------------------------------------- anti-triche
+ * Les gemmes et le score sont calculés par le site, puis envoyés ici. Pour
+ * qu'un tricheur ne puisse pas répéter l'envoi à l'infini, chaque compte a
+ * un BUDGET PAR JOUR (heure de Paris) en plus de la limite par envoi :
+ *  - gemmes gagnées via la synchro : en vrai, on ne gagne en jouant que
+ *    +1 gemme par nouveau quiz officiel terminé (les coffres, la boutique et
+ *    les achats Stripe passent directement par le serveur, hors budget).
+ *  - score : plafond d'un niveau Expert par envoi, budget large par jour.
+ *  - objets (multiplicateurs / jokers) : chaque objet doit être "payé" par
+ *    des gemmes dépensées dans le même envoi (≥ 400 gemmes / objet).
+ * Au-delà : la hausse est simplement LIMITÉE (rien n'est remis à zéro) et
+ * l'incident est noté sur le compte, visible dans le panneau admin.
+ */
+const MAX_GEMS_DELTA_PER_SYNC = 300;
+const DAILY_GEMS_FROM_SYNC = 300;
+const MAX_SCORE_DELTA_PER_SYNC = 10_000_000_000; // plafond d'un niveau Expert
+const DAILY_SCORE_FROM_SYNC = 50_000_000_000;
+const MIN_GEMS_PER_ITEM = 400; // prix le plus bas d'un objet en boutique (450) avec une marge
+const DAILY_OFFICIAL_HISTORY = 300; // résultats de quiz officiels enregistrés par jour
+const MAX_HISTORY_SCORE = 10_000_000_000;
+
+function acBucket(game) {
+  const day = G.dayIndex(new Date());
+  const ac = game.ac && typeof game.ac === "object" ? { ...game.ac } : {};
+  if (ac.day !== day) {
+    ac.day = day;
+    ac.gems = 0;
+    ac.score = 0;
+    ac.hist = 0;
+  }
+  if (!Array.isArray(ac.flags)) ac.flags = [];
+  if (!Number.isFinite(ac.total)) ac.total = 0;
+  game.ac = ac;
+  return ac;
+}
+function acFlag(ac, user, kind, asked, allowed) {
+  ac.total += 1;
+  ac.flags = ac.flags.concat([{ at: new Date().toISOString(), kind, asked, allowed }]).slice(-20);
+  console.warn(`⚠️  [anti-triche] ${user.username} (${user.id}) : ${kind} demandé +${asked}, accepté +${allowed}.`);
+}
 // Numéro de version de l'état de jeu : augmente à CHAQUE changement fait
 // par le serveur lui-même (achat de gemmes via Stripe, coffre ouvert,
 // coffre journalier, fond acheté…). Si le site renvoie un état basé sur
@@ -138,16 +176,22 @@ router.patch("/me/game", authenticate(true), async (req, res, next) => {
     // rev absent = ancien site : on reste tolérant (comportement d'avant)
     const stale = typeof rev === "number" && rev < serverRev;
 
+    const ac = acBucket(game);
+    let gemsSpent = 0;
     if (typeof gems === "number" && !stale) {
       const nextGems = Math.max(0, Math.round(gems));
       const currentGems = Number.isFinite(game.gems) ? game.gems : 0;
-      if (nextGems - currentGems > MAX_GEMS_DELTA_PER_SYNC) {
-        console.warn(
-          `⚠️  [anti-triche] Bond de gemmes anormal pour l'utilisateur ${current.username} (${current.id}) : ${currentGems} → ${nextGems} en un seul appel (max autorisé : +${MAX_GEMS_DELTA_PER_SYNC}). Gemmes remises à 0.`
-        );
-        game.gems = 0;
-        anomalyDetected = true;
+      const delta = nextGems - currentGems;
+      if (delta > 0) {
+        const allowed = Math.max(0, Math.min(delta, MAX_GEMS_DELTA_PER_SYNC, DAILY_GEMS_FROM_SYNC - ac.gems));
+        if (allowed < delta) {
+          acFlag(ac, current, "gemmes", delta, allowed);
+          anomalyDetected = true;
+        }
+        ac.gems += allowed;
+        game.gems = currentGems + allowed;
       } else {
+        gemsSpent = -delta;
         game.gems = nextGems;
       }
     }
@@ -156,25 +200,36 @@ router.patch("/me/game", authenticate(true), async (req, res, next) => {
     if (typeof lifetimeScore === "number") {
       const nextScore = Math.max(0, Math.round(lifetimeScore));
       const currentScore = Number.isFinite(game.lifetimeScore) ? game.lifetimeScore : 0;
-      if (nextScore - currentScore > MAX_SCORE_DELTA_PER_SYNC) {
-        console.warn(
-          `⚠️  [anti-triche] Bond de score anormal pour l'utilisateur ${current.username} (${current.id}) : ${currentScore} → ${nextScore} en un seul appel (max autorisé : +${MAX_SCORE_DELTA_PER_SYNC}). Score remis à 0.`
-        );
-        game.lifetimeScore = 0;
-        anomalyDetected = true;
-      } else {
-        game.lifetimeScore = nextScore;
+      const delta = nextScore - currentScore;
+      // Le score total ne baisse jamais par la synchro (un vieil appareil ne peut pas l'écraser).
+      if (delta > 0) {
+        const allowed = Math.max(0, Math.min(delta, MAX_SCORE_DELTA_PER_SYNC, DAILY_SCORE_FROM_SYNC - ac.score));
+        if (allowed < delta) {
+          acFlag(ac, current, "score", delta, allowed);
+          anomalyDetected = true;
+        }
+        ac.score += allowed;
+        game.lifetimeScore = currentScore + allowed;
       }
     }
     // Objets : les fonds d'écran ne s'obtiennent QUE par le serveur (coffres,
     // boutique) ; multiplicateurs/jokers : hausse limitée par synchronisation.
     if (inventory && typeof inventory === "object" && !stale) {
       const inv = { ...(game.inventory || {}) };
+      // Chaque nouvel objet doit avoir été payé en gemmes dans ce même envoi.
+      let paidItems = Math.floor(gemsSpent / MIN_GEMS_PER_ITEM);
       ["multiplier", "joker"].forEach((k) => {
         if (!Number.isFinite(inventory[k])) return;
         const cur = Number.isFinite(inv[k]) ? inv[k] : 0;
         const next = Math.max(0, Math.round(inventory[k]));
-        inv[k] = Math.min(next, cur + MAX_ITEMS_DELTA_PER_SYNC);
+        if (next <= cur) { inv[k] = next; return; }
+        const allowed = Math.max(0, Math.min(next - cur, MAX_ITEMS_DELTA_PER_SYNC, paidItems));
+        paidItems -= allowed;
+        if (allowed < next - cur) {
+          acFlag(ac, current, k === "joker" ? "jokers" : "multiplicateurs", next - cur, allowed);
+          anomalyDetected = true;
+        }
+        inv[k] = cur + allowed;
       });
       game.inventory = inv;
     }
@@ -362,15 +417,47 @@ router.post("/me/subscribe", authenticate(true), requireAdmin, async (req, res, 
 // POST /api/users/me/history  (une entrée d'historique de partie)
 router.post("/me/history", authenticate(true), async (req, res, next) => {
   try {
-    const entry = req.body || {};
-    if (!entry || typeof entry !== "object") {
+    const raw = req.body || {};
+    if (!raw || typeof raw !== "object") {
       return res.status(400).json({ error: "Entrée d'historique invalide." });
     }
+    // Seuls les champs connus sont gardés, avec des valeurs plausibles.
+    const num = (v, max) => (Number.isFinite(v) ? Math.max(0, Math.min(max, Math.round(v))) : null);
+    const entry = {
+      id: raw.id != null ? String(raw.id).slice(0, 80) : null,
+      title: String(raw.title || "Quiz").slice(0, 150),
+      username: req.user.username,
+      date: Number.isFinite(raw.date) ? raw.date : Date.now(),
+      score: num(raw.score, MAX_HISTORY_SCORE) || 0,
+      correct: num(raw.correct, 100000),
+      wrong: num(raw.wrong, 100000),
+      avgResponseMs: num(raw.avgResponseMs, 3600000),
+      durationMs: num(raw.durationMs, 86400000 * 3),
+      masteryPct: num(raw.masteryPct, 100),
+      totalQuestions: num(raw.totalQuestions, 100000),
+      official: false,
+      receivedAt: new Date().toISOString(),
+    };
+    // "Officiel" (classement des quiz officiels) : vérifié par le serveur,
+    // jamais cru sur parole, et limité en nombre par jour.
+    const game = { ...(req.user.game || {}) };
+    const ac = acBucket(game);
+    if (raw.official && entry.id) {
+      const quiz = await db.getQuizById(entry.id).catch(() => null);
+      if (quiz && quiz.official) {
+        if (ac.hist < DAILY_OFFICIAL_HISTORY) {
+          entry.official = true;
+          ac.hist += 1;
+        } else {
+          acFlag(ac, req.user, "résultats officiels", 1, 0);
+        }
+      }
+    }
     const history = Array.isArray(req.user.history) ? req.user.history.slice() : [];
-    history.push({ ...entry, receivedAt: new Date().toISOString() });
+    history.push(entry);
     if (history.length > 500) history.splice(0, history.length - 500);
 
-    const row = await db.updateUser(req.user.id, { history });
+    const row = await db.updateUser(req.user.id, { history, game });
     res.status(201).json({ user: toPublicUser(row) });
   } catch (e) {
     next(e);

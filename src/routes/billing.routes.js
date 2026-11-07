@@ -75,8 +75,14 @@ router.post("/checkout", authenticate(true), async (req, res, next) => {
     if (!stripe) return res.status(503).json({ error: "Paiement non configuré côté serveur (STRIPE_SECRET_KEY manquante)." });
 
     const { tier } = req.body || {};
-    const interval = (req.body && req.body.interval) === "month" ? "month" : "year";
-    const priceId = priceIdForTier(tier, interval);
+    // Mensuel par défaut (l'annuel est proposé par Stripe au paiement) ;
+    // si le prix demandé n'est pas configuré, on prend l'autre au lieu de planter.
+    let interval = (req.body && req.body.interval) === "year" ? "year" : "month";
+    let priceId = priceIdForTier(tier, interval);
+    if (!priceId) {
+      const other = interval === "month" ? "year" : "month";
+      if (priceIdForTier(tier, other)) { interval = other; priceId = priceIdForTier(tier, other); }
+    }
     if (!priceId) {
       return res.status(400).json({ error: "Palier d'abonnement invalide ou non configuré (STRIPE_PRICE_...)." });
     }

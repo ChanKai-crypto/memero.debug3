@@ -620,4 +620,45 @@ router.delete("/discounts/:id", async (req, res, next) => {
   }
 });
 
+/* ---------------------------------------------------------------- Système
+ * Vérifie la configuration (sans jamais renvoyer les valeurs secrètes) :
+ * clés Stripe, prix de chaque offre, webhook, emails, tables Supabase.
+ */
+router.get("/system", async (req, res, next) => {
+  try {
+    const env = process.env;
+    const has = (k) => !!(env[k] && String(env[k]).trim());
+    const key = env.STRIPE_SECRET_KEY || "";
+    const plans = {};
+    [["bas", "PLUS"], ["standard", "MAX"], ["plus", "ULTRA"]].forEach(([tier, name]) => {
+      plans[tier] = { month: has(`STRIPE_PRICE_${name}_MONTHLY`), year: has(`STRIPE_PRICE_${name}_YEARLY`) };
+    });
+    const gems = {};
+    ["moyen", "grand", "mega"].forEach((p) => { gems[p] = has(`STRIPE_PRICE_GEMS_${p.toUpperCase()}`); });
+    const tables = {};
+    for (const tname of ["deleted_items", "custom_skins", "discounts"]) {
+      const { error } = await db.supabase.from(tname).select("id").limit(1);
+      tables[tname] = !error;
+    }
+    const { error: qtErr } = await db.supabase.from("custom_skins").select("react_at").limit(1);
+    tables["custom_skins (colonnes 09/11)"] = !qtErr;
+    res.json({
+      backendVersion: require("../server.version"),
+      uptimeSec: Math.round(process.uptime()),
+      region: env.RENDER_REGION || null,
+      stripe: {
+        key: !key ? "absente" : key.startsWith("sk_live_") ? "live" : key.startsWith("sk_test_") ? "test" : "inconnue",
+        webhookSecret: has("STRIPE_WEBHOOK_SECRET"),
+        plans,
+        gems,
+      },
+      email: { resend: has("RESEND_API_KEY") },
+      frontendUrl: env.FRONTEND_URL || null,
+      tables,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
 module.exports = router;

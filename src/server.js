@@ -12,6 +12,10 @@ const leaderboardRoutes = require("./routes/leaderboard.routes");
 const billingRoutes = require("./routes/billing.routes");
 const playlistsRoutes = require("./routes/playlists.routes");
 const dictRoutes = require("./routes/dict.routes");
+const skinsRoutes = require("./routes/skins.routes");
+const discountsRoutes = require("./routes/discounts.routes");
+const { startDiscountsRefresh } = require("./utils/discounts");
+const { startCustomSkinsRefresh } = require("./utils/customSkins");
 
 const app = express();
 
@@ -55,7 +59,7 @@ app.use("/api/auth", authLimiter);
 // la dernière version livrée (au lieu de deviner) — ouvre simplement
 // https://ton-service.onrender.com/api/health dans un navigateur et
 // compare "backendVersion" à la valeur indiquée dans la réponse de Claude.
-const BACKEND_VERSION = "2026-11-07-1";
+const BACKEND_VERSION = "2026-11-09-1";
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, service: "memero-backend", backendVersion: BACKEND_VERSION, time: new Date().toISOString() });
@@ -68,6 +72,8 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api/billing", billingRoutes);
 app.use("/api/playlists", playlistsRoutes);
+app.use("/api/skins", skinsRoutes);
+app.use("/api/discounts", discountsRoutes); // réductions affichées sur le site // fonds ajoutés depuis le panneau admin
 app.use("/api/dict", dictRoutes); // « IA dictionnaire » locale (data/dicts)
 
 // 404 générique pour toute route API inconnue
@@ -84,6 +90,8 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`✅ Memero backend démarré sur le port ${PORT}`);
+  startCustomSkinsRefresh();
+  startDiscountsRefresh();
 });
 
 module.exports = app;

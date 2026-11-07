@@ -4,11 +4,65 @@ const authenticate = require("../middleware/authenticate");
 const requireAdmin = require("../middleware/requireAdmin");
 const { stripe, priceIdForTier, tierForPriceId, priceIdForGemPack, gemsForPack, packIdForPriceId } = require("../utils/stripe");
 
+const D = require("../utils/discounts");
+
 const router = express.Router();
 
 function frontendUrl() {
   return (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
 }
+
+/**
+ * Relit l'abonnement directement chez Stripe et corrige le compte si besoin.
+ * Filet de sécurité si un webhook a été perdu (serveur endormi, erreur...) :
+ * le site l'appelle au retour du paiement et une fois par session.
+ * Ne touche jamais à un abonnement offert par un admin (provider ≠ stripe).
+ */
+async function syncSubscriptionFromStripe(user) {
+  if (!user || !user.stripe_customer_id) return { user, changed: false };
+  const subs = await stripe.subscriptions.list({ customer: user.stripe_customer_id, status: "all", limit: 20 });
+  const rank = { plus: 3, standard: 2, bas: 1 };
+  let best = null;
+  (subs.data || []).forEach((sub) => {
+    if (sub.status !== "active" && sub.status !== "trialing" && sub.status !== "past_due") return;
+    const priceId = sub.items.data[0] && sub.items.data[0].price && sub.items.data[0].price.id;
+    const tier = tierForPriceId(priceId);
+    if (!tier) return;
+    if (!best || (rank[tier] || 0) > (rank[best.tier] || 0)) best = { sub, tier };
+  });
+  const cur = user.subscription || {};
+  let next = null;
+  if (best) {
+    const renewsAt = best.sub.current_period_end ? new Date(best.sub.current_period_end * 1000).toISOString() : null;
+    if (cur.tier !== best.tier || cur.status !== "active" || cur.providerTransactionId !== best.sub.id) {
+      next = {
+        ...cur,
+        tier: best.tier,
+        status: "active",
+        startedAt: cur.startedAt || new Date().toISOString(),
+        renewsAt,
+        provider: "stripe",
+        providerTransactionId: best.sub.id,
+      };
+    }
+  } else if (cur.provider === "stripe" && cur.status === "active") {
+    next = { tier: "free", status: "inactive", startedAt: null, renewsAt: null, provider: "stripe", providerTransactionId: null };
+  }
+  if (!next) return { user, changed: false };
+  const row = await db.updateUser(user.id, { subscription: next, ...(best ? { stripe_subscription_id: best.sub.id } : {}) });
+  return { user: row, changed: true };
+}
+
+// POST /api/billing/sync : resynchronise l'abonnement avec Stripe.
+router.post("/sync", authenticate(true), async (req, res, next) => {
+  try {
+    const { toPublicUser } = require("../utils/mappers");
+    const r = await syncSubscriptionFromStripe(req.user);
+    res.json({ changed: r.changed, user: toPublicUser(r.user) });
+  } catch (e) {
+    next(e);
+  }
+});
 
 // POST /api/billing/checkout   { tier: "bas" | "standard" | "plus", interval: "month" | "year" (défaut) }
 // Crée une session de paiement Stripe et renvoie son URL : le client doit
@@ -37,11 +91,15 @@ router.post("/checkout", authenticate(true), async (req, res, next) => {
       await db.updateUser(req.user.id, { stripe_customer_id: customerId });
     }
 
+    // Réduction en cours sur cette offre : appliquée automatiquement.
+    const disc = await D.checkoutParams("plan", tier);
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: customerId,
       client_reference_id: req.user.id,
       line_items: [{ price: priceId, quantity: 1 }],
+      ...disc.params,
+      metadata: { memero_user_id: req.user.id, memero_tier: tier, ...(disc.discountId ? { memerro_discount_id: String(disc.discountId) } : {}) },
       subscription_data: {
         metadata: { memero_user_id: req.user.id, memero_tier: tier, memero_interval: interval },
       },
@@ -85,15 +143,17 @@ router.post("/checkout-gems", authenticate(true), async (req, res, next) => {
       await db.updateUser(req.user.id, { stripe_customer_id: customerId });
     }
 
+    const disc = await D.checkoutParams("gems", packId);
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       customer: customerId,
       client_reference_id: req.user.id,
       line_items: [{ price: priceId, quantity: 1 }],
+      ...disc.params,
       // Un paiement unique n'a pas d'objet "subscription" pour porter des
       // métadonnées côté Stripe : on les met directement sur la session,
       // relues dans le webhook ci-dessous pour savoir quel pack créditer.
-      metadata: { memero_user_id: req.user.id, memero_gem_pack: packId },
+      metadata: { memero_user_id: req.user.id, memero_gem_pack: packId, ...(disc.discountId ? { memerro_discount_id: String(disc.discountId) } : {}) },
       success_url: `${frontendUrl()}/?checkout=success`,
       cancel_url: `${frontendUrl()}/?checkout=cancel`,
       managed_payments: { enabled: false },
@@ -150,6 +210,12 @@ router.post("/webhook", async (req, res) => {
       case "checkout.session.completed": {
         const session = event.data.object;
         const userId = session.client_reference_id;
+        // Réduction utilisée : on la compte (limite "nombre max de personnes").
+        const usedDiscount = session.metadata && session.metadata.memerro_discount_id;
+        const discounted = session.total_details && session.total_details.amount_discount > 0;
+        if (usedDiscount && discounted) {
+          try { await D.noteUse(usedDiscount); } catch (e) { console.warn("[réductions] comptage impossible :", e.message); }
+        }
 
         if ("payment" === session.mode) {
           // Achat ponctuel de gemmes (pas d'abonnement) : on lit le pack
@@ -159,12 +225,20 @@ router.post("/webhook", async (req, res) => {
           const gemsToAdd = gemsForPack(packId);
           if (userId && gemsToAdd > 0) {
             const user = await db.getUserById(userId);
-            if (user) {
+            // Stripe peut renvoyer le même événement plusieurs fois : on note
+            // les sessions déjà créditées pour ne jamais créditer deux fois.
+            const paid = (user && user.game && Array.isArray(user.game.paidSessions)) ? user.game.paidSessions : [];
+            if (user && paid.indexOf(session.id) === -1) {
               const currentGems = (user.game && Number.isFinite(user.game.gems)) ? user.game.gems : 0;
               await db.updateUser(userId, {
                 // rev + 1 : le site saura que ses gemmes locales sont périmées
                 // et ne pourra plus écraser les gemmes tout juste achetées.
-                game: { ...user.game, gems: currentGems + gemsToAdd, rev: (Number.isFinite(user.game && user.game.rev) ? user.game.rev : 0) + 1 },
+                game: {
+                  ...user.game,
+                  gems: currentGems + gemsToAdd,
+                  paidSessions: paid.concat([session.id]).slice(-50),
+                  rev: (Number.isFinite(user.game && user.game.rev) ? user.game.rev : 0) + 1,
+                },
               });
             }
           }

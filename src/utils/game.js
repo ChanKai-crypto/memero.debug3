@@ -86,6 +86,100 @@ const SKINS = [
 ];
 const SKIN_BY_ID = Object.fromEntries(SKINS.map((s) => [s.id, s]));
 
+/* ---- Fonds ajoutés depuis le panneau admin (table custom_skins) ----
+ * Gardés en mémoire (rechargés toutes les minutes et après chaque
+ * modification admin). Chaque fond a :
+ *   r (rareté), price, maxOwners (null = illimité), ownersCount,
+ *   avail : { type: "always" | "yearly" | "dates", from: "MM-DD", to: "MM-DD", startsAt, endsAt },
+ *   afterEnd : "keep" (on le garde pour toujours) | "remove" (utilisable seulement pendant sa période),
+ *   inShop, inChests, active.
+ */
+let CUSTOM = [];
+function setCustomSkins(list) {
+  CUSTOM = Array.isArray(list) ? list : [];
+}
+function getCustomSkins() {
+  return CUSTOM;
+}
+function customById(id) {
+  return CUSTOM.find((c) => c.id === id) || null;
+}
+function mdToNum(md) {
+  const m = /^(\d{1,2})-(\d{1,2})$/.exec(String(md || ""));
+  return m ? Number(m[1]) * 100 + Number(m[2]) : null;
+}
+/** Le fond est-il dans sa période (saison / dates) ? */
+function customInWindow(c, date) {
+  return inWindow(c.avail, date);
+}
+/**
+ * Période d'un élément limité (fond ou réduction) :
+ *   avail : { type: "always" | "yearly" | "dates", from, to, startsAt, endsAt }
+ *   after : ce qui se passe APRÈS la période
+ *     "unavailable" : plus disponible (les joueurs qui l'ont le gardent)
+ *     "reactivate"  : redevient disponible à la date reactAt
+ *     "change"      : reste disponible mais "change un peu" (prix / rareté / %)
+ * Renvoie { on, changed, phase } — phase : "in" | "before" | "after" | "reactivated".
+ */
+function inWindow(a, date) {
+  const d = date || new Date();
+  a = a || {};
+  if (a.type === "yearly") {
+    const p = parisYMD(d);
+    const v = p.m * 100 + p.d;
+    const from = mdToNum(a.from);
+    const to = mdToNum(a.to);
+    if (from === null || to === null) return true;
+    return from <= to ? v >= from && v <= to : v >= from || v <= to;
+  }
+  if (a.type === "dates") {
+    const t = d.getTime();
+    if (a.startsAt && t < new Date(a.startsAt).getTime()) return false;
+    if (a.endsAt && t > new Date(a.endsAt).getTime()) return false;
+  }
+  return true;
+}
+function periodState(item, date) {
+  const d = date || new Date();
+  const a = item.avail || {};
+  if (inWindow(a, d)) return { on: true, changed: false, phase: "in" };
+  if (a.type === "dates" && a.startsAt && d.getTime() < new Date(a.startsAt).getTime()) return { on: false, changed: false, phase: "before" };
+  const mode = item.afterEnd;
+  if (mode === "change") return { on: true, changed: true, phase: "after" };
+  if (mode === "reactivate" && a.type === "dates" && item.reactAt && d.getTime() >= new Date(item.reactAt).getTime()) {
+    return { on: true, changed: false, phase: "reactivated" };
+  }
+  return { on: false, changed: false, phase: "after" };
+}
+function customSoldOut(c) {
+  return Number.isFinite(c.maxOwners) && c.maxOwners > 0 && (c.ownersCount || 0) >= c.maxOwners;
+}
+/** Version "effective" d'un fond aujourd'hui (rareté / prix après changement éventuel). */
+function customEffective(c, date) {
+  const st = periodState(c, date);
+  const r = st.changed && c.afterRarity && RARITY[c.afterRarity] ? c.afterRarity : c.r;
+  let price = Number.isFinite(c.price) && c.price >= 0 ? c.price : null;
+  if (st.changed && Number.isFinite(c.afterPrice) && c.afterPrice >= 0) price = c.afterPrice;
+  if (price === null) price = (RARITY[r] || RARITY.commun).price;
+  return { ...st, r, price, obtainable: !!c.active && st.on && !customSoldOut(c) };
+}
+/** Peut-on l'obtenir maintenant (boutique / coffre) ? */
+function customObtainable(c, date) {
+  return customEffective(c, date).obtainable;
+}
+/** Un fond obtenu n'est JAMAIS perdu : toujours utilisable par son propriétaire. */
+function customUsable(c) {
+  return !!c;
+}
+function skinById(id) {
+  return SKIN_BY_ID[id] || customById(id);
+}
+function skinPrice(skin, date) {
+  if (!skin) return null;
+  if (skin.custom) return customEffective(skin, date).price;
+  return (RARITY[skin.r] || RARITY.commun).price;
+}
+
 function inSeason(skin, date) {
   if (!skin.season) return true;
   const p = parisYMD(date);
@@ -124,6 +218,8 @@ function skinsOfDay(date) {
   SKINS.forEach((s) => {
     if (s.season && inSeason(s, date)) out.unshift(s);
   });
+  // Fonds admin "en boutique" : toujours visibles pendant leur période (avant les autres).
+  CUSTOM.filter((c) => c.inShop && customObtainable(c, date)).forEach((c) => out.unshift(c));
   return out;
 }
 
@@ -131,7 +227,10 @@ function ownedSkins(game) {
   const inv = (game && game.inventory) || {};
   const set = new Set(STARTER_SKINS);
   (Array.isArray(inv.skins) ? inv.skins : []).forEach((id) => {
-    if (SKIN_BY_ID[id]) set.add(id);
+    // Un fond admin reste dans l'inventaire même s'il est hors période ("remove") :
+    // il redevient utilisable quand sa période revient. S'il a été supprimé
+    // par l'admin, on garde l'id (restauration possible) mais il n'est plus affiché.
+    if (SKIN_BY_ID[id] || /^c_[a-z_]+$/.test(id)) set.add(id);
   });
   return Array.from(set);
 }
@@ -145,6 +244,12 @@ function rollSkinDrop(tier, owned, rnd) {
     s,
     w: RARITY[s.r].w * (s.season ? 2.5 : 1),
   }));
+  CUSTOM.forEach((c) => {
+    const eff = customEffective(c);
+    if (c.inChests && eff.obtainable && owned.indexOf(c.id) === -1 && RARITY[eff.r] && RARITY[eff.r].rank <= max) {
+      pool.push({ s: c, w: RARITY[eff.r].w * 2 });
+    }
+  });
   const pick = weightedPick(pool, r);
   return pick ? pick.id : null;
 }
@@ -279,6 +384,18 @@ module.exports = {
   LEGACY_SKINS,
   dayIndex,
   inSeason,
+  setCustomSkins,
+  getCustomSkins,
+  customById,
+  customInWindow,
+  customEffective,
+  inWindow,
+  periodState,
+  customObtainable,
+  customUsable,
+  customSoldOut,
+  skinById,
+  skinPrice,
   skinsOfDay,
   ownedSkins,
   reconcilePending,

@@ -100,7 +100,7 @@ router.delete("/users/:id", async (req, res, next) => {
     if (!target) return res.status(404).json({ error: "Compte introuvable." });
     if (blockedFromModifyingSuperadmin(req, res, target)) return;
 
-    await db.deleteUser(req.params.id);
+    await db.deleteUser(req.params.id, req.user.id);
     res.status(204).end();
   } catch (e) {
     next(e);
@@ -221,7 +221,7 @@ router.patch("/learn-trees/:id", async (req, res, next) => {
 // parcours qu'elles contenaient ne sont pas supprimés (juste "hors section").
 router.delete("/learn-trees/:id", async (req, res, next) => {
   try {
-    await db.deleteLearnTree(req.params.id);
+    await db.deleteLearnTree(req.params.id, req.user.id);
     res.json({ ok: true });
   } catch (e) {
     next(e);
@@ -319,7 +319,7 @@ router.patch("/learn-sections/:id", async (req, res, next) => {
 // DELETE /api/admin/learn-sections/:id
 router.delete("/learn-sections/:id", async (req, res, next) => {
   try {
-    await db.deleteLearnSection(req.params.id);
+    await db.deleteLearnSection(req.params.id, req.user.id);
     res.json({ ok: true });
   } catch (e) {
     next(e);
@@ -329,7 +329,7 @@ router.delete("/learn-sections/:id", async (req, res, next) => {
 // DELETE /api/admin/playlists/:id
 router.delete("/playlists/:id", async (req, res, next) => {
   try {
-    const removed = await db.deletePlaylist(req.params.id);
+    const removed = await db.deletePlaylist(req.params.id, req.user.id);
     if (!removed) return res.status(404).json({ error: "Parcours introuvable." });
     res.status(204).end();
   } catch (e) {
@@ -352,7 +352,7 @@ router.delete("/quizzes/:id", async (req, res, next) => {
   try {
     const existing = await db.getQuizById(req.params.id);
     if (!existing) return res.status(404).json({ error: "Quiz introuvable." });
-    await db.deleteQuiz(req.params.id);
+    await db.deleteQuiz(req.params.id, req.user.id);
     res.status(204).end();
   } catch (e) {
     next(e);
@@ -372,6 +372,249 @@ router.patch("/quizzes/:id", async (req, res, next) => {
 
     const row = await db.updateQuiz(req.params.id, patch);
     res.json({ quiz: toPublicQuiz(row) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/* ------------------------------------------------------------------ Fonds
+ * Fonds d'écran ajoutés par l'admin (image jpg/png envoyée en base64,
+ * déjà redimensionnée par le site). Spécificités : rareté, prix, nombre
+ * max de joueurs, période (toute l'année / chaque année du JJ/MM au JJ/MM /
+ * entre deux dates), et ce qui se passe après la période.
+ */
+const G = require("../utils/game");
+const { reloadCustomSkins } = require("../utils/customSkins");
+const { publicSkin } = require("./skins.routes");
+const RARITIES = ["commun", "rare", "epique", "legendaire"];
+const MAX_IMAGE_CHARS = 2.6 * 1024 * 1024; // ~1,9 Mo d'image
+
+function slugSkinId(name) {
+  const base = String(name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 20) || "fond";
+  return "c_" + base;
+}
+function cleanMD(v) {
+  const m = /^(\d{1,2})-(\d{1,2})$/.exec(String(v || "").trim());
+  if (!m) return null;
+  const mo = Number(m[1]);
+  const d = Number(m[2]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  return String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+}
+function cleanDate(v) {
+  if (!v) return null;
+  const t = new Date(v);
+  return isNaN(t.getTime()) ? null : t.toISOString();
+}
+
+// GET /api/admin/skins : tous les fonds admin (même désactivés)
+router.get("/skins", async (req, res, next) => {
+  try {
+    const list = await reloadCustomSkins();
+    const now = new Date();
+    res.json({ skins: list.map((c) => ({ ...publicSkin(c, now), active: c.active })) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/admin/skins : crée ou modifie un fond
+// { id?, name, rarity, price?, maxOwners?, availType, from?, to?, startsAt?, endsAt?, afterEnd, inShop, inChests, active, image? }
+router.post("/skins", async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const name = String(b.name || "").trim().slice(0, 40);
+    if (!name) return res.status(400).json({ error: "Donne un nom au fond." });
+    const existingList = await reloadCustomSkins();
+    let id = b.id ? String(b.id) : null;
+    const editing = id && existingList.some((c) => c.id === id);
+    if (!editing) {
+      const base = slugSkinId(name);
+      id = base;
+      const letters = "abcdefghijklmnopqrstuvwxyz";
+      let n = 0;
+      while (existingList.some((c) => c.id === id) || G.SKIN_BY_ID[id]) {
+        id = base + "_" + letters[n % 26] + (n >= 26 ? letters[Math.floor(n / 26) % 26] : "");
+        n++;
+      }
+    }
+    if (!/^c_[a-z_]{1,28}$/.test(id)) return res.status(400).json({ error: "Identifiant de fond invalide." });
+    const image = b.image ? String(b.image) : null;
+    if (!editing && !image) return res.status(400).json({ error: "Ajoute une image (jpg ou png)." });
+    if (image) {
+      if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(image)) return res.status(400).json({ error: "L'image doit être un fichier jpg ou png." });
+      if (image.length > MAX_IMAGE_CHARS) return res.status(413).json({ error: "Image trop lourde (2 Mo max)." });
+    }
+    const availType = ["always", "yearly", "dates"].includes(b.availType) ? b.availType : "always";
+    const row = {
+      id,
+      name,
+      rarity: RARITIES.includes(b.rarity) ? b.rarity : "commun",
+      price: Number.isFinite(Number(b.price)) && b.price !== "" && b.price !== null ? Math.max(0, Math.round(Number(b.price))) : null,
+      max_owners: Number(b.maxOwners) > 0 ? Math.round(Number(b.maxOwners)) : null,
+      avail_type: availType,
+      from_md: availType === "yearly" ? cleanMD(b.from) : null,
+      to_md: availType === "yearly" ? cleanMD(b.to) : null,
+      starts_at: availType === "dates" ? cleanDate(b.startsAt) : null,
+      ends_at: availType === "dates" ? cleanDate(b.endsAt) : null,
+      // Après la période (un fond obtenu n'est JAMAIS retiré aux joueurs) :
+      after_end: ["reactivate", "change"].includes(b.afterEnd) ? b.afterEnd : "unavailable",
+      react_at: b.afterEnd === "reactivate" ? cleanDate(b.reactAt) : null,
+      after_price: b.afterEnd === "change" && b.afterPrice !== "" && b.afterPrice !== null && Number.isFinite(Number(b.afterPrice)) ? Math.max(0, Math.round(Number(b.afterPrice))) : null,
+      after_rarity: b.afterEnd === "change" && RARITIES.includes(b.afterRarity) ? b.afterRarity : null,
+      in_shop: b.inShop !== false,
+      in_chests: b.inChests !== false,
+      active: b.active !== false,
+    };
+    if (availType === "yearly" && (!row.from_md || !row.to_md)) return res.status(400).json({ error: "Indique le début et la fin de la période (JJ/MM)." });
+    if (availType === "dates" && !row.starts_at && !row.ends_at) return res.status(400).json({ error: "Indique au moins une date de début ou de fin." });
+    if (row.after_end === "reactivate" && !row.react_at) return res.status(400).json({ error: "Indique la date de réactivation." });
+    if (image) row.image = image;
+    if (!editing) {
+      row.owners_count = 0;
+      row.created_at = new Date().toISOString();
+    }
+    const saved = await db.upsertCustomSkin(row);
+    await reloadCustomSkins();
+    res.json({ skin: { ...publicSkin(saved, new Date()), active: saved.active } });
+  } catch (e) {
+    if (/custom_skins/.test(e.message || "")) return res.status(500).json({ error: "La table custom_skins n'existe pas encore : lance le fichier SQL de migration dans Supabase." });
+    next(e);
+  }
+});
+
+// DELETE /api/admin/skins/:id (copie gardée dans la corbeille)
+router.delete("/skins/:id", async (req, res, next) => {
+  try {
+    await db.deleteCustomSkin(String(req.params.id), req.user.id);
+    await reloadCustomSkins();
+    res.status(204).end();
+  } catch (e) {
+    next(e);
+  }
+});
+
+/* -------------------------------------------------------------- Corbeille */
+// GET /api/admin/trash : les 200 derniers éléments supprimés
+router.get("/trash", async (req, res, next) => {
+  try {
+    const rows = await db.listTrash(200);
+    res.json({
+      items: rows.map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        itemId: r.item_id,
+        name: (r.data && (r.data.name || r.data.title || r.data.username)) || r.item_id,
+        deletedBy: r.deleted_by,
+        deletedAt: r.deleted_at,
+        restoredAt: r.restored_at,
+      })),
+    });
+  } catch (e) {
+    if (/deleted_items/.test(e.message || "")) return res.json({ items: [], missingTable: true });
+    next(e);
+  }
+});
+
+// POST /api/admin/trash/:id/restore : remet l'élément en place
+router.post("/trash/:id/restore", async (req, res, next) => {
+  try {
+    const item = await db.restoreTrash(req.params.id);
+    if (!item) return res.status(404).json({ error: "Élément introuvable dans la corbeille." });
+    if (item.kind === "custom_skin") await reloadCustomSkins();
+    if (item.kind === "discount") await D.reloadDiscounts();
+    res.json({ ok: true, kind: item.kind, itemId: item.item_id });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/* ------------------------------------------------------------- Réductions */
+const D = require("../utils/discounts");
+const PLAN_IDS = ["bas", "standard", "plus"];
+const PACK_IDS = ["petit", "moyen", "grand", "mega"];
+function pickList(v, allowed) {
+  return Array.isArray(v) ? v.filter((x) => allowed.includes(x)) : [];
+}
+
+// GET /api/admin/discounts
+router.get("/discounts", async (req, res, next) => {
+  try {
+    const list = await D.reloadDiscounts();
+    const now = new Date();
+    res.json({ discounts: list.map((d) => ({ ...D.publicDiscount(d, now), active: d.active, showCode: d.showCode, rawCode: d.code, maxUses: d.maxUses, usesCount: d.usesCount })) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/admin/discounts : crée ou modifie une réduction
+router.post("/discounts", async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const name = String(b.name || "").trim().slice(0, 60);
+    if (!name) return res.status(400).json({ error: "Donne un nom à la réduction." });
+    const percent = Math.round(Number(b.percent));
+    if (!(percent >= 1 && percent <= 90)) return res.status(400).json({ error: "La réduction doit être entre 1 et 90 %." });
+    const t = b.targets || {};
+    const targets = { plans: pickList(t.plans, PLAN_IDS), gems: pickList(t.gems, PACK_IDS), skins: pickList(t.skins, RARITIES) };
+    if (!targets.plans.length && !targets.gems.length && !targets.skins.length) return res.status(400).json({ error: "Choisis au moins une chose à réduire." });
+    const availType = ["always", "yearly", "dates"].includes(b.availType) ? b.availType : "always";
+    const afterEnd = ["reactivate", "change"].includes(b.afterEnd) ? b.afterEnd : "unavailable";
+    const duration = ["once", "repeating", "forever"].includes(b.duration) ? b.duration : "once";
+    const code = b.showCode ? String(b.code || "").trim().toUpperCase() : "";
+    if (b.showCode && !/^[A-Z0-9]{3,20}$/.test(code)) return res.status(400).json({ error: "Le code promo doit faire 3 à 20 lettres ou chiffres (ex. NOEL20)." });
+    const row = {
+      id: b.id ? String(b.id) : require("crypto").randomUUID(),
+      name,
+      percent,
+      targets,
+      max_uses: Number(b.maxUses) > 0 ? Math.round(Number(b.maxUses)) : null,
+      avail_type: availType,
+      from_md: availType === "yearly" ? cleanMD(b.from) : null,
+      to_md: availType === "yearly" ? cleanMD(b.to) : null,
+      starts_at: availType === "dates" ? cleanDate(b.startsAt) : null,
+      ends_at: availType === "dates" ? cleanDate(b.endsAt) : null,
+      after_end: afterEnd,
+      react_at: afterEnd === "reactivate" ? cleanDate(b.reactAt) : null,
+      after_percent: afterEnd === "change" && Number(b.afterPercent) >= 1 && Number(b.afterPercent) <= 90 ? Math.round(Number(b.afterPercent)) : null,
+      duration,
+      duration_months: duration === "repeating" ? Math.max(1, Math.min(36, Math.round(Number(b.durationMonths) || 1))) : null,
+      show_code: !!b.showCode,
+      code: code || null,
+      extra_text: String(b.text || "").trim().slice(0, 200),
+      active: b.active !== false,
+    };
+    if (availType === "yearly" && (!row.from_md || !row.to_md)) return res.status(400).json({ error: "Indique le début et la fin de la période (JJ/MM)." });
+    if (availType === "dates" && !row.starts_at && !row.ends_at) return res.status(400).json({ error: "Indique au moins une date de début ou de fin." });
+    if (afterEnd === "reactivate" && !row.react_at) return res.status(400).json({ error: "Indique la date de réactivation." });
+    if (afterEnd === "change" && !row.after_percent) return res.status(400).json({ error: "Indique le nouveau pourcentage après la période." });
+    if (!b.id) {
+      row.uses_count = 0;
+      row.created_at = new Date().toISOString();
+      row.stripe_coupons = {};
+    }
+    const saved = await db.upsertDiscount(row);
+    await D.reloadDiscounts();
+    res.json({ discount: D.publicDiscount(saved, new Date()) });
+  } catch (e) {
+    if (/discounts/.test(e.message || "")) return res.status(500).json({ error: "La table discounts n'existe pas encore : lance le fichier SQL de migration dans Supabase." });
+    next(e);
+  }
+});
+
+// DELETE /api/admin/discounts/:id
+router.delete("/discounts/:id", async (req, res, next) => {
+  try {
+    await db.deleteDiscount(String(req.params.id), req.user.id);
+    await D.reloadDiscounts();
+    res.status(204).end();
   } catch (e) {
     next(e);
   }

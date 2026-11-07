@@ -6,6 +6,7 @@ const { hashPassword, verifyPassword } = require("../utils/auth");
 const { sendVerificationEmail, generateCode } = require("../utils/email");
 const requireAdmin = require("../middleware/requireAdmin");
 const G = require("../utils/game");
+const D = require("../utils/discounts");
 
 const router = express.Router();
 
@@ -242,7 +243,10 @@ router.post("/me/chests/open", authenticate(true), async (req, res, next) => {
     r.items.forEach((it) => {
       inv[it.kind] = (Number.isFinite(inv[it.kind]) ? inv[it.kind] : 0) + it.n;
     });
-    if (r.skin) inv.skins = owned.concat([r.skin]);
+    if (r.skin) {
+      inv.skins = owned.concat([r.skin]);
+      if (G.customById(r.skin)) { await db.incrementCustomSkinOwners(r.skin); G.customById(r.skin).ownersCount++; }
+    }
     game.inventory = inv;
     game.gems = (Number.isFinite(game.gems) ? game.gems : 0) + r.gems;
     game.chestsPending = pending;
@@ -256,26 +260,40 @@ router.post("/me/chests/open", authenticate(true), async (req, res, next) => {
 
 // GET /api/users/skins/today  (public) : les fonds en vente aujourd'hui
 router.get("/skins/today", (req, res) => {
-  res.json({ day: G.dayIndex(new Date()), skins: G.skinsOfDay(new Date()).map((s) => ({ id: s.id, rarity: s.r, price: G.RARITY[s.r].price })) });
+  const now = new Date();
+  res.json({
+    day: G.dayIndex(now),
+    skins: G.skinsOfDay(now).map((s) => {
+      const r = s.custom ? G.customEffective(s, now).r : s.r;
+      const base = G.skinPrice(s, now);
+      const best = D.bestFor("skin", r, now);
+      return { id: s.id, rarity: r, basePrice: base, price: best ? D.applyGems(base, best.percent) : base, discount: best ? best.percent : 0, custom: !!s.custom };
+    }),
+  });
 });
 
 // POST /api/users/me/skins/buy  { skinId }
 router.post("/me/skins/buy", authenticate(true), async (req, res, next) => {
   try {
     const id = String((req.body && req.body.skinId) || "");
-    const skin = G.SKIN_BY_ID[id];
+    const skin = G.skinById(id);
     if (!skin) return res.status(400).json({ error: "Fond inconnu." });
     if (!G.skinsOfDay(new Date()).some((s) => s.id === id)) return res.status(409).json({ error: "Ce fond n'est pas en vente aujourd'hui." });
     const game = { ...req.user.game };
     const owned = G.ownedSkins(game);
     if (owned.indexOf(id) !== -1) return res.status(409).json({ error: "Tu as déjà ce fond.", user: toPublicUser(req.user) });
-    const price = G.RARITY[skin.r].price;
+    if (skin.custom && G.customSoldOut(skin)) return res.status(409).json({ error: "Ce fond est épuisé.", user: toPublicUser(req.user) });
+    const effR = skin.custom ? G.customEffective(skin).r : skin.r;
+    const best = D.bestFor("skin", effR);
+    const price = best ? D.applyGems(G.skinPrice(skin), best.percent) : G.skinPrice(skin);
     const gems = Number.isFinite(game.gems) ? game.gems : 0;
     if (gems < price) return res.status(402).json({ error: "Pas assez de gemmes.", user: toPublicUser(req.user) });
     game.gems = gems - price;
     game.inventory = { ...(game.inventory || {}), skins: owned.concat([id]) };
     bumpRev(game);
     const row = await db.updateUser(req.user.id, { game });
+    if (skin.custom) { await db.incrementCustomSkinOwners(id); skin.ownersCount = (skin.ownersCount || 0) + 1; }
+    if (best) await D.noteUse(best.discount.id);
     res.json({ ok: true, skinId: id, user: toPublicUser(row) });
   } catch (e) {
     next(e);
@@ -372,7 +390,7 @@ router.get("/me/playlists", authenticate(true), async (req, res, next) => {
 // PUT /api/users/me/playlists  { playlists: [...] }
 router.put("/me/playlists", authenticate(true), async (req, res, next) => {
   try {
-    const { playlists } = req.body || {};
+    const { playlists, deletedIds } = req.body || {};
     if (!Array.isArray(playlists)) {
       return res.status(400).json({ error: "playlists doit être un tableau." });
     }
@@ -385,7 +403,7 @@ router.put("/me/playlists", authenticate(true), async (req, res, next) => {
         return res.status(403).json({ error: `Limite de ${limit} parcours atteinte pour ton abonnement.`, limit });
       }
     }
-    const updated = await db.replaceUserPlaylists(req.user.id, req.user.username, playlists);
+    const updated = await db.replaceUserPlaylists(req.user.id, req.user.username, playlists, Array.isArray(deletedIds) ? deletedIds : []);
     res.json({ playlists: updated });
   } catch (e) {
     next(e);
@@ -420,7 +438,7 @@ router.delete("/me", authenticate(true), async (req, res, next) => {
     if (!password || !verifyPassword(password, req.user.password_hash)) {
       return res.status(401).json({ error: "Mot de passe incorrect." });
     }
-    await db.deleteUser(req.user.id);
+    await db.deleteUser(req.user.id, req.user.id);
     res.status(204).end();
   } catch (e) {
     next(e);

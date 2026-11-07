@@ -23,6 +23,170 @@ function throwIfError(error, context) {
   }
 }
 
+/* -------------------------------- Corbeille ---------------------------------
+ * Avant TOUTE suppression (quiz, parcours, arbre, section, compte), une copie
+ * complète est rangée dans la table deleted_items : rien n'est jamais perdu
+ * définitivement, un admin peut tout restaurer (voir /api/admin/trash).
+ * Si la table n'existe pas encore (migration pas lancée), la suppression
+ * continue normalement.
+ */
+async function trash(kind, rows, deletedBy) {
+  const list = (Array.isArray(rows) ? rows : [rows]).filter(Boolean);
+  if (!list.length) return;
+  const { error } = await supabase.from("deleted_items").insert(
+    list.map((r) => ({ kind, item_id: String(r.id), data: r, deleted_by: deletedBy || null }))
+  );
+  if (error) console.warn(`[corbeille] copie impossible (${kind}) : ${error.message}`);
+}
+
+async function listTrash(limit) {
+  const { data, error } = await supabase
+    .from("deleted_items")
+    .select("id, kind, item_id, data, deleted_by, deleted_at, restored_at")
+    .order("deleted_at", { ascending: false })
+    .limit(limit || 200);
+  throwIfError(error, "listTrash");
+  return data || [];
+}
+
+const TRASH_TABLE = { quiz: "quizzes", playlist: "playlists", learn_tree: "learn_trees", learn_section: "learn_sections", custom_skin: "custom_skins", user: "users", discount: "discounts" };
+async function restoreTrash(trashId) {
+  const { data: item, error } = await supabase.from("deleted_items").select("*").eq("id", trashId).maybeSingle();
+  throwIfError(error, "restoreTrash:get");
+  if (!item) return null;
+  const table = TRASH_TABLE[item.kind];
+  if (!table) throw new Error("Ce type d'élément ne peut pas être restauré automatiquement.");
+  const { error: upErr } = await supabase.from(table).upsert(item.data, { onConflict: "id" });
+  throwIfError(upErr, "restoreTrash:upsert");
+  await supabase.from("deleted_items").update({ restored_at: new Date().toISOString() }).eq("id", trashId);
+  if (item.kind === "quiz" || item.kind === "playlist") await refreshHiddenQuizzes();
+  return item;
+}
+
+/* ------------------------- Fonds ajoutés par l'admin ------------------------- */
+function toCustomSkin(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    custom: true,
+    name: row.name || row.id,
+    r: row.rarity || "commun",
+    price: Number.isFinite(row.price) ? row.price : null,
+    maxOwners: Number.isFinite(row.max_owners) && row.max_owners > 0 ? row.max_owners : null,
+    ownersCount: Number.isFinite(row.owners_count) ? row.owners_count : 0,
+    avail: {
+      type: row.avail_type || "always",
+      from: row.from_md || null,
+      to: row.to_md || null,
+      startsAt: row.starts_at || null,
+      endsAt: row.ends_at || null,
+    },
+    // Les anciennes valeurs "keep"/"remove" deviennent "unavailable" (un fond obtenu n'est jamais perdu).
+    afterEnd: ["reactivate", "change"].includes(row.after_end) ? row.after_end : "unavailable",
+    reactAt: row.react_at || null,
+    afterPrice: Number.isFinite(row.after_price) ? row.after_price : null,
+    afterRarity: row.after_rarity || null,
+    inShop: row.in_shop !== false,
+    inChests: row.in_chests !== false,
+    active: row.active !== false,
+    version: row.updated_at ? new Date(row.updated_at).getTime() : 0,
+  };
+}
+const CUSTOM_SKIN_COLS = "id, name, rarity, price, max_owners, owners_count, avail_type, from_md, to_md, starts_at, ends_at, after_end, react_at, after_price, after_rarity, in_shop, in_chests, active, created_at, updated_at";
+const CUSTOM_SKIN_COLS_V1 = "id, name, rarity, price, max_owners, owners_count, avail_type, from_md, to_md, starts_at, ends_at, after_end, in_shop, in_chests, active, created_at, updated_at";
+async function listCustomSkins() {
+  let { data, error } = await supabase.from("custom_skins").select(CUSTOM_SKIN_COLS).order("created_at", { ascending: true });
+  if (error && /react_at|after_price|after_rarity/.test(error.message || "")) {
+    // Migration du 9/11 pas encore lancée : on lit sans les nouvelles colonnes.
+    ({ data, error } = await supabase.from("custom_skins").select(CUSTOM_SKIN_COLS_V1).order("created_at", { ascending: true }));
+  }
+  if (error) {
+    // Table pas encore créée : aucun fond admin, sans planter le serveur.
+    if (/custom_skins/.test(error.message || "")) return [];
+    throwIfError(error, "listCustomSkins");
+  }
+  return (data || []).map(toCustomSkin);
+}
+async function getCustomSkinImage(id) {
+  const { data, error } = await supabase.from("custom_skins").select("image, updated_at").eq("id", id).maybeSingle();
+  throwIfError(error, "getCustomSkinImage");
+  return data;
+}
+async function upsertCustomSkin(row) {
+  let { data, error } = await supabase.from("custom_skins").upsert({ ...row, updated_at: new Date().toISOString() }, { onConflict: "id" }).select(CUSTOM_SKIN_COLS).single();
+  if (error && /react_at|after_price|after_rarity|after_end_check/.test(error.message || "")) {
+    const old = { ...row };
+    delete old.react_at; delete old.after_price; delete old.after_rarity;
+    old.after_end = "keep";
+    ({ data, error } = await supabase.from("custom_skins").upsert({ ...old, updated_at: new Date().toISOString() }, { onConflict: "id" }).select(CUSTOM_SKIN_COLS_V1).single());
+  }
+  throwIfError(error, "upsertCustomSkin");
+  return toCustomSkin(data);
+}
+async function deleteCustomSkin(id, deletedBy) {
+  const { data: before } = await supabase.from("custom_skins").select("*").eq("id", id);
+  await trash("custom_skin", before || [], deletedBy);
+  const { error } = await supabase.from("custom_skins").delete().eq("id", id);
+  throwIfError(error, "deleteCustomSkin");
+}
+async function incrementCustomSkinOwners(id) {
+  const { data } = await supabase.from("custom_skins").select("owners_count").eq("id", id).maybeSingle();
+  if (!data) return;
+  await supabase.from("custom_skins").update({ owners_count: (data.owners_count || 0) + 1 }).eq("id", id);
+}
+
+/* -------------------------------- Réductions -------------------------------- */
+function toDiscount(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name || "Réduction",
+    percent: Number(row.percent) || 0,
+    targets: row.targets || {},
+    maxUses: Number.isFinite(row.max_uses) && row.max_uses > 0 ? row.max_uses : null,
+    usesCount: Number.isFinite(row.uses_count) ? row.uses_count : 0,
+    avail: { type: row.avail_type || "always", from: row.from_md || null, to: row.to_md || null, startsAt: row.starts_at || null, endsAt: row.ends_at || null },
+    afterEnd: ["reactivate", "change"].includes(row.after_end) ? row.after_end : "unavailable",
+    reactAt: row.react_at || null,
+    afterPercent: Number.isFinite(row.after_percent) ? row.after_percent : null,
+    duration: row.duration || "once",
+    durationMonths: Number.isFinite(row.duration_months) ? row.duration_months : null,
+    showCode: !!row.show_code,
+    code: row.code || null,
+    text: row.extra_text || "",
+    active: row.active !== false,
+    stripeCoupons: row.stripe_coupons || {},
+  };
+}
+async function listDiscounts() {
+  const { data, error } = await supabase.from("discounts").select("*").order("created_at", { ascending: true });
+  if (error) {
+    if (/discounts/.test(error.message || "")) return [];
+    throwIfError(error, "listDiscounts");
+  }
+  return (data || []).map(toDiscount);
+}
+async function upsertDiscount(row) {
+  const { data, error } = await supabase.from("discounts").upsert({ ...row, updated_at: new Date().toISOString() }, { onConflict: "id" }).select("*").single();
+  throwIfError(error, "upsertDiscount");
+  return toDiscount(data);
+}
+async function updateDiscount(id, patch) {
+  const { error } = await supabase.from("discounts").update(patch).eq("id", id);
+  throwIfError(error, "updateDiscount");
+}
+async function deleteDiscount(id, deletedBy) {
+  const { data: before } = await supabase.from("discounts").select("*").eq("id", id);
+  await trash("discount", before || [], deletedBy);
+  const { error } = await supabase.from("discounts").delete().eq("id", id);
+  throwIfError(error, "deleteDiscount");
+}
+async function incrementDiscountUses(id) {
+  const { data } = await supabase.from("discounts").select("uses_count").eq("id", id).maybeSingle();
+  if (!data) return;
+  await supabase.from("discounts").update({ uses_count: (data.uses_count || 0) + 1 }).eq("id", id);
+}
+
 /* ------------------------------- Utilisateurs ------------------------------- */
 
 async function getUserById(id) {
@@ -74,7 +238,11 @@ async function updateUser(id, patch) {
   return data;
 }
 
-async function deleteUser(id) {
+async function deleteUser(id, deletedBy) {
+  const { data: u } = await supabase.from("users").select("*").eq("id", id);
+  await trash("user", u || [], deletedBy);
+  const { data: pls } = await supabase.from("playlists").select("*").eq("owner_id", id);
+  await trash("playlist", pls || [], deletedBy);
   const { error } = await supabase.from("users").delete().eq("id", id);
   throwIfError(error, "deleteUser");
 }
@@ -302,7 +470,9 @@ async function setPlaylistFields(playlistId, patch) {
 // Supprime un parcours — un DELETE direct par id, maintenant que les
 // parcours ont leur propre table. Renvoie false si aucun parcours avec cet
 // id n'existe (rien à faire), true si la suppression a bien eu lieu.
-async function deletePlaylist(playlistId) {
+async function deletePlaylist(playlistId, deletedBy) {
+  const { data: before } = await supabase.from("playlists").select("*").eq("id", playlistId);
+  await trash("playlist", before || [], deletedBy);
   const { data, error } = await supabase.from("playlists").delete().eq("id", playlistId).select();
   throwIfError(error, "deletePlaylist");
   const removed = (data || []).length > 0;
@@ -324,15 +494,14 @@ async function getUserPlaylists(userId) {
 
 // Remplace l'ensemble des parcours D'UN compte par la liste envoyée par le
 // client (même contrat que l'ancien PUT /api/users/me/playlists, qui
-// écrivait tout le tableau JSON d'un coup) : upsert chaque parcours reçu,
-// puis supprime ceux de ce compte qui ne sont plus dans la liste — c'est
-// ainsi qu'une suppression faite localement (via le menu "..." d'un
-// parcours) se répercute bien sur le serveur. Important : le champ
+// écrivait tout le tableau JSON d'un coup) : upsert chaque parcours reçu.
+// Les suppressions ne passent QUE par deletedIds (ids explicitement
+// supprimés par le joueur), jamais par "absent de la liste". Important : le champ
 // "official" n'est JAMAIS pris depuis le client (un simple utilisateur ne
 // doit jamais pouvoir se marquer lui-même "officiel") — on conserve
 // toujours la valeur déjà en base, uniquement modifiable par l'admin via
 // setPlaylistFields.
-async function replaceUserPlaylists(userId, username, playlists) {
+async function replaceUserPlaylists(userId, username, playlists, deletedIds) {
   // La colonne « units » arrive avec migration-2026-11-unites-parcours.sql :
   // tant qu'elle n'existe pas, on continue de synchroniser sans elle.
   let hasUnits = true;
@@ -367,6 +536,20 @@ async function replaceUserPlaylists(userId, username, playlists) {
     unitsById[row.id] = row.units;
   });
 
+  // Un parcours qui appartient à QUELQU'UN D'AUTRE (ex. parcours public
+  // copié avec le même id) ne doit jamais être "volé" par l'upsert : sinon
+  // il disparaissait du compte de son vrai propriétaire.
+  const candidateIds = playlists.map((p) => p && p.id).filter(Boolean).map(String);
+  const ownIds = new Set((existing || []).map((r) => String(r.id)));
+  const foreign = new Set();
+  const unknown = candidateIds.filter((id) => !ownIds.has(id));
+  if (unknown.length) {
+    const { data: others } = await supabase.from("playlists").select("id, owner_id").in("id", unknown);
+    (others || []).forEach((r) => {
+      if (String(r.owner_id) !== String(userId)) foreign.add(String(r.id));
+    });
+  }
+  playlists = playlists.filter((p) => p && p.id && !foreign.has(String(p.id)));
   const incomingIds = playlists.map((p) => p.id).filter(Boolean);
 
   if (playlists.length > 0) {
@@ -405,12 +588,19 @@ async function replaceUserPlaylists(userId, username, playlists) {
     throwIfError(upsertError, "replaceUserPlaylists:upsert");
   }
 
-  let delQuery = supabase.from("playlists").delete().eq("owner_id", userId);
-  if (incomingIds.length > 0) {
-    delQuery = delQuery.not("id", "in", `(${incomingIds.map((id) => `"${id}"`).join(",")})`);
+  // ⚠️ AVANT : tout parcours absent de la liste envoyée était SUPPRIMÉ.
+  // Un appareil neuf (liste locale vide) effaçait donc tous les parcours du
+  // compte. Désormais on ne supprime QUE les parcours explicitement
+  // supprimés par le joueur (deletedIds), et une copie part en corbeille.
+  const toDelete = (Array.isArray(deletedIds) ? deletedIds : [])
+    .map(String)
+    .filter((id) => id && incomingIds.indexOf(id) === -1);
+  if (toDelete.length) {
+    const { data: doomed } = await supabase.from("playlists").select("*").eq("owner_id", userId).in("id", toDelete);
+    await trash("playlist", doomed || [], userId);
+    const { error: delError } = await supabase.from("playlists").delete().eq("owner_id", userId).in("id", toDelete);
+    throwIfError(delError, "replaceUserPlaylists:delete");
   }
-  const { error: delError } = await delQuery;
-  throwIfError(delError, "replaceUserPlaylists:delete");
 
   await refreshHiddenQuizzes();
   return getUserPlaylists(userId);
@@ -436,15 +626,30 @@ async function updateQuiz(id, patch) {
   return data;
 }
 
-async function deleteQuiz(id) {
+async function deleteQuiz(id, deletedBy) {
+  const { data: before } = await supabase.from("quizzes").select("*").eq("id", id);
+  await trash("quiz", before || [], deletedBy);
   const { error } = await supabase.from("quizzes").delete().eq("id", id);
   throwIfError(error, "deleteQuiz");
 }
 
 async function listQuizzes() {
-  const { data, error } = await supabase.from("quizzes").select("*").order("created_at", { ascending: false });
-  throwIfError(error, "listQuizzes");
-  return data;
+  // Supabase renvoie au maximum 1000 lignes par requête : au-delà, des quiz
+  // "disparaissaient" de la liste (et le site les croyait supprimés).
+  const all = [];
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from("quizzes")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    throwIfError(error, "listQuizzes");
+    all.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+  return all;
 }
 
 // === Arbres (un par thème : sujet + style visuel) ===
@@ -508,7 +713,11 @@ async function updateLearnTree(id, patch) {
   throwIfError(error, "updateLearnTree");
   return toPublicLearnTree(data);
 }
-async function deleteLearnTree(id) {
+async function deleteLearnTree(id, deletedBy) {
+  const { data: t } = await supabase.from("learn_trees").select("*").eq("id", id);
+  await trash("learn_tree", t || [], deletedBy);
+  const { data: secs } = await supabase.from("learn_sections").select("*").eq("tree_id", id);
+  await trash("learn_section", secs || [], deletedBy);
   const { error } = await supabase.from("learn_trees").delete().eq("id", id);
   throwIfError(error, "deleteLearnTree");
   return true;
@@ -573,6 +782,8 @@ async function deleteLearnSection(id) {
   // Les parcours qui y étaient connectés redeviennent automatiquement
   // visibles individuellement (learn_section_id repasse à NULL via la
   // contrainte "on delete set null" posée dans la migration).
+  const { data: sec } = await supabase.from("learn_sections").select("*").eq("id", id);
+  await trash("learn_section", sec || [], arguments[1]);
   const { error } = await supabase.from("learn_sections").delete().eq("id", id);
   throwIfError(error, "deleteLearnSection");
   return true;
@@ -614,4 +825,16 @@ module.exports = {
   updateQuiz,
   deleteQuiz,
   listQuizzes,
+  listTrash,
+  restoreTrash,
+  listCustomSkins,
+  getCustomSkinImage,
+  upsertCustomSkin,
+  deleteCustomSkin,
+  incrementCustomSkinOwners,
+  listDiscounts,
+  upsertDiscount,
+  updateDiscount,
+  deleteDiscount,
+  incrementDiscountUses,
 };

@@ -139,9 +139,14 @@ router.delete("/:id", authenticate(true), async (req, res, next) => {
   try {
     const existing = await db.getQuizById(req.params.id);
     if (!existing) return res.status(404).json({ error: "Quiz introuvable." });
-    if (!canEdit(req.user, existing)) return res.status(403).json({ error: "Non autorisé." });
+    // Seul le PROPRIÉTAIRE peut supprimer via cette route. Avant, un compte
+    // admin qui synchronisait son appareil pouvait effacer les quiz des
+    // autres sans le vouloir. Les admins passent par /api/admin/quizzes/:id.
+    if (!existing.owner_id || String(existing.owner_id) !== String(req.user.id)) {
+      return res.status(403).json({ error: "Seul le créateur du quiz peut le supprimer ici." });
+    }
 
-    await db.deleteQuiz(req.params.id);
+    await db.deleteQuiz(req.params.id, req.user.id);
     res.status(204).end();
   } catch (e) {
     next(e);

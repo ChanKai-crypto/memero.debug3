@@ -22,6 +22,13 @@ function toPublicUser(row) {
   };
 }
 
+const REMOVED_CONFIG_KEYS = ["levelSeparator", "lessonStartMarker", "lessonEndMarker", "lessonKeywordEnabled", "lessonKeywordText", "lessonKeywordAnywhere", "lessonKeywordExtraParas"];
+function publicConfig(c) {
+  if (!c || typeof c !== "object" || Array.isArray(c)) return c || null;
+  const out = { ...c };
+  REMOVED_CONFIG_KEYS.forEach((k) => delete out[k]);
+  return out;
+}
 /** Transforme une ligne "quizzes" de Supabase en objet à renvoyer au client. */
 function toPublicQuiz(row) {
   if (!row) return null;
@@ -33,7 +40,7 @@ function toPublicQuiz(row) {
     difficulty: row.difficulty,
     format: row.format,
     raw: row.raw,
-    config: row.config,
+    config: publicConfig(row.config),
     language: row.language,
     instructionLanguage: row.instruction_language || row.language,
     premiumOnly: row.premium_only,

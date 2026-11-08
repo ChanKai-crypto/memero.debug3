@@ -61,6 +61,18 @@ router.get("/:id", authenticate(false), async (req, res, next) => {
   }
 });
 
+
+// Les leçons et parties s'écrivent seulement avec « # » et « ## » dans le
+// texte : les anciens réglages (séparateur, marqueurs, mot-clé de leçon)
+// ne sont plus gardés dans la configuration du quiz.
+const REMOVED_CONFIG_KEYS = ["levelSeparator", "lessonStartMarker", "lessonEndMarker", "lessonKeywordEnabled", "lessonKeywordText", "lessonKeywordAnywhere", "lessonKeywordExtraParas"];
+function cleanConfig(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return {};
+  const out = { ...config };
+  REMOVED_CONFIG_KEYS.forEach((k) => delete out[k]);
+  return out;
+}
+
 // POST /api/quizzes
 router.post("/", authenticate(true), async (req, res, next) => {
   try {
@@ -84,7 +96,7 @@ const { title, difficulty, format, raw, config, language, instructionLanguage, p
       difficulty: difficulty || "normal",
       format: format || "pairs",
       raw: String(raw),
-      config: config || {},
+      config: cleanConfig(config),
       language: language || null,
       instruction_language: instructionLanguage || language || null,
       premium_only: !!premiumOnly,
@@ -111,7 +123,7 @@ router.put("/:id", authenticate(true), async (req, res, next) => {
     if (difficulty) patch.difficulty = difficulty;
     if (format) patch.format = format;
     if (typeof raw === "string") patch.raw = raw;
-    if (config) patch.config = config;
+    if (config) patch.config = cleanConfig(config);
     if (language !== undefined) patch.language = language;
     if (instructionLanguage !== undefined) patch.instruction_language = instructionLanguage;
     if (typeof premiumOnly === "boolean") {
@@ -154,3 +166,4 @@ router.delete("/:id", authenticate(true), async (req, res, next) => {
 });
 
 module.exports = router;
+module.exports.cleanConfig = cleanConfig;

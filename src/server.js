@@ -14,7 +14,6 @@ const playlistsRoutes = require("./routes/playlists.routes");
 const dictRoutes = require("./routes/dict.routes");
 const skinsRoutes = require("./routes/skins.routes");
 const discountsRoutes = require("./routes/discounts.routes");
-const metaRoutes = require("./routes/meta.routes");
 const events = require("./utils/events");
 const { startDiscountsRefresh } = require("./utils/discounts");
 const { startCustomSkinsRefresh } = require("./utils/customSkins");
@@ -81,7 +80,6 @@ app.use("/api/billing", billingRoutes);
 app.use("/api/playlists", playlistsRoutes);
 app.use("/api/skins", skinsRoutes);
 app.use("/api/discounts", discountsRoutes);
-app.use("/api/meta", metaRoutes); // langues présentes sur le serveur // réductions affichées sur le site // fonds ajoutés depuis le panneau admin
 app.use("/api/dict", dictRoutes); // « IA dictionnaire » locale (data/dicts)
 
 // 404 générique pour toute route API inconnue

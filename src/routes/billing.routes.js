@@ -209,6 +209,7 @@ router.post("/webhook", async (req, res) => {
     return res.status(400).send(`Webhook Error: ${e.message}`);
   }
 
+  let touchedUser = null;
   try {
     switch (event.type) {
       // Paiement initial confirmé : on active l'abonnement, OU on crédite un
@@ -236,6 +237,7 @@ router.post("/webhook", async (req, res) => {
             const paid = (user && user.game && Array.isArray(user.game.paidSessions)) ? user.game.paidSessions : [];
             if (user && paid.indexOf(session.id) === -1) {
               const currentGems = (user.game && Number.isFinite(user.game.gems)) ? user.game.gems : 0;
+              touchedUser = userId;
               await db.updateUser(userId, {
                 // rev + 1 : le site saura que ses gemmes locales sont périmées
                 // et ne pourra plus écraser les gemmes tout juste achetées.
@@ -256,7 +258,8 @@ router.post("/webhook", async (req, res) => {
           const sub = await stripe.subscriptions.retrieve(subscriptionId);
           const priceId = sub.items.data[0] && sub.items.data[0].price && sub.items.data[0].price.id;
           const tier = tierForPriceId(priceId) || "bas";
-          await db.updateUser(userId, {
+          touchedUser = userId;
+              await db.updateUser(userId, {
             stripe_subscription_id: subscriptionId,
             subscription: {
               tier,
@@ -279,6 +282,7 @@ router.post("/webhook", async (req, res) => {
           const priceId = sub.items.data[0] && sub.items.data[0].price && sub.items.data[0].price.id;
           const tier = tierForPriceId(priceId) || user.subscription.tier;
           const active = sub.status === "active" || sub.status === "trialing";
+          touchedUser = user.id;
           await db.updateUser(user.id, {
             subscription: {
               ...user.subscription,
@@ -299,6 +303,7 @@ router.post("/webhook", async (req, res) => {
         const sub = event.data.object;
         const user = await db.getUserByStripeCustomerId(sub.customer);
         if (user) {
+          touchedUser = user.id;
           await db.updateUser(user.id, {
             subscription: {
               tier: "free",
@@ -317,6 +322,7 @@ router.post("/webhook", async (req, res) => {
         // Autres événements Stripe : ignorés volontairement.
         break;
     }
+    if (touchedUser) require("../utils/events").publishUser(touchedUser, "profile");
     res.json({ received: true });
   } catch (e) {
     console.error("[stripe webhook] erreur de traitement :", e.message);

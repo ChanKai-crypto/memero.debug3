@@ -14,6 +14,8 @@ const playlistsRoutes = require("./routes/playlists.routes");
 const dictRoutes = require("./routes/dict.routes");
 const skinsRoutes = require("./routes/skins.routes");
 const discountsRoutes = require("./routes/discounts.routes");
+const metaRoutes = require("./routes/meta.routes");
+const events = require("./utils/events");
 const { startDiscountsRefresh } = require("./utils/discounts");
 const { startCustomSkinsRefresh } = require("./utils/customSkins");
 
@@ -51,7 +53,7 @@ app.use("/legal", express.static(path.join(__dirname, "../public/legal")));
 // limite plus stricte spécifiquement sur les routes d'authentification
 // (connexion, inscription, mot de passe oublié), où la force brute est le
 // vrai risque.
-app.use("/api", generalLimiter);
+app.use("/api", (req, res, next) => (req.path === "/events" ? next() : generalLimiter(req, res, next)));
 app.use("/api/auth", authLimiter);
 
 // Marqueur de version : change à chaque livraison du backend, pour
@@ -65,6 +67,11 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true, service: "memero-backend", backendVersion: BACKEND_VERSION, time: new Date().toISOString() });
 });
 
+// Mises à jour en direct : connexion permanente, donc montée AVANT la
+// limite de requêtes générale (une connexion ouverte = une seule requête).
+app.get("/api/events", events.stream);
+app.use("/api", events.notifier);
+
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/quizzes", quizRoutes);
@@ -73,7 +80,8 @@ app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api/billing", billingRoutes);
 app.use("/api/playlists", playlistsRoutes);
 app.use("/api/skins", skinsRoutes);
-app.use("/api/discounts", discountsRoutes); // réductions affichées sur le site // fonds ajoutés depuis le panneau admin
+app.use("/api/discounts", discountsRoutes);
+app.use("/api/meta", metaRoutes); // langues présentes sur le serveur // réductions affichées sur le site // fonds ajoutés depuis le panneau admin
 app.use("/api/dict", dictRoutes); // « IA dictionnaire » locale (data/dicts)
 
 // 404 générique pour toute route API inconnue

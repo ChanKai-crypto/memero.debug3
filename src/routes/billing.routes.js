@@ -13,14 +13,36 @@ function frontendUrl() {
 }
 
 /**
+ * Client Stripe enregistré sur le compte, s'il existe encore chez Stripe.
+ * Un identifiant créé en mode test n'existe pas en mode réel (et un client
+ * peut avoir été supprimé) : Stripe répond « resource_missing ». Dans ce cas
+ * on l'oublie (null) au lieu de planter, et un nouveau sera créé au besoin.
+ */
+async function liveCustomerId(user) {
+  const id = user && user.stripe_customer_id;
+  if (!id) return null;
+  try {
+    const c = await stripe.customers.retrieve(id);
+    if (c && !c.deleted) return id;
+  } catch (e) {
+    if (!(e && (e.code === "resource_missing" || e.statusCode === 404))) throw e;
+  }
+  await db.updateUser(user.id, { stripe_customer_id: null });
+  user.stripe_customer_id = null;
+  return null;
+}
+
+/**
  * Relit l'abonnement directement chez Stripe et corrige le compte si besoin.
  * Filet de sécurité si un webhook a été perdu (serveur endormi, erreur...) :
  * le site l'appelle au retour du paiement et une fois par session.
  * Ne touche jamais à un abonnement offert par un admin (provider ≠ stripe).
  */
 async function syncSubscriptionFromStripe(user) {
-  if (!user || !user.stripe_customer_id) return { user, changed: false };
-  const subs = await stripe.subscriptions.list({ customer: user.stripe_customer_id, status: "all", limit: 20 });
+  if (!user || !user.stripe_customer_id || !stripe) return { user, changed: false };
+  const customer = await liveCustomerId(user);
+  if (!customer) return { user, changed: false };
+  const subs = await stripe.subscriptions.list({ customer, status: "all", limit: 20 });
   const rank = { plus: 3, standard: 2, bas: 1 };
   let best = null;
   (subs.data || []).forEach((sub) => {
@@ -87,7 +109,7 @@ router.post("/checkout", authenticate(true), async (req, res, next) => {
       return res.status(400).json({ error: "Palier d'abonnement invalide ou non configuré (STRIPE_PRICE_...)." });
     }
 
-    let customerId = req.user.stripe_customer_id;
+    let customerId = await liveCustomerId(req.user);
     if (!customerId) {
       const customer = await stripe.customers.create({
         email: req.user.email || undefined,
@@ -139,7 +161,7 @@ router.post("/checkout-gems", authenticate(true), async (req, res, next) => {
       return res.status(400).json({ error: "Pack de gemmes invalide ou non configuré (STRIPE_PRICE_GEMS_...)." });
     }
 
-    let customerId = req.user.stripe_customer_id;
+    let customerId = await liveCustomerId(req.user);
     if (!customerId) {
       const customer = await stripe.customers.create({
         email: req.user.email || undefined,
@@ -177,7 +199,7 @@ router.post("/checkout-gems", authenticate(true), async (req, res, next) => {
 router.post("/portal", authenticate(true), async (req, res, next) => {
   try {
     if (!stripe) return res.status(503).json({ error: "Paiement non configuré côté serveur." });
-    if (!req.user.stripe_customer_id) {
+    if (!(await liveCustomerId(req.user))) {
       return res.status(400).json({ error: "Ce compte n'a pas encore d'abonnement Stripe associé." });
     }
 

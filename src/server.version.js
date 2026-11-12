@@ -1,2 +1,2 @@
 // Version du serveur (affichée par /api/health et le panneau admin > Système).
-module.exports = "2026-11-20-1";
+module.exports = "2026-11-21-1";

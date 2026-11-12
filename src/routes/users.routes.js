@@ -166,6 +166,7 @@ router.patch("/me/game", authenticate(true), async (req, res, next) => {
       chestWeeklyLegendary,
       levelProgress,
       playlistProgress,
+      lessonsUnlocked,
       stats,
       rev,
     } = req.body || {};
@@ -246,6 +247,19 @@ router.patch("/me/game", authenticate(true), async (req, res, next) => {
     // Progression (niveaux, parcours) : n'était jamais enregistrée avant.
     if (levelProgress && typeof levelProgress === "object" && JSON.stringify(levelProgress).length < 400000) game.levelProgress = levelProgress;
     if (playlistProgress && typeof playlistProgress === "object" && JSON.stringify(playlistProgress).length < 100000) game.playlistProgress = playlistProgress;
+    // Leçons débloquées : { idDuQuiz: ["clé", …] }. On fusionne (jamais de perte
+    // entre appareils) ; seulement de courtes chaînes, taille bornée.
+    if (lessonsUnlocked && typeof lessonsUnlocked === "object" && !Array.isArray(lessonsUnlocked)) {
+      const merged = { ...(game.lessonsUnlocked && typeof game.lessonsUnlocked === "object" ? game.lessonsUnlocked : {}) };
+      Object.keys(lessonsUnlocked).slice(0, 2000).forEach((qid) => {
+        const list = lessonsUnlocked[qid];
+        if (typeof qid !== "string" || qid.length > 80 || !Array.isArray(list)) return;
+        const set = new Set(Array.isArray(merged[qid]) ? merged[qid] : []);
+        list.slice(0, 500).forEach((k) => { if (typeof k === "string" && k.length <= 80) set.add(k); });
+        merged[qid] = Array.from(set).slice(0, 500);
+      });
+      if (JSON.stringify(merged).length < 300000) game.lessonsUnlocked = merged;
+    }
 
     const patch = { game };
     if (stats && typeof stats === "object") patch.stats = { ...current.stats, ...stats };

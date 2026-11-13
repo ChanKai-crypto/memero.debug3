@@ -167,6 +167,7 @@ router.patch("/me/game", authenticate(true), async (req, res, next) => {
       levelProgress,
       playlistProgress,
       lessonsUnlocked,
+      levelStars,
       stats,
       rev,
     } = req.body || {};
@@ -259,6 +260,24 @@ router.patch("/me/game", authenticate(true), async (req, res, next) => {
         merged[qid] = Array.from(set).slice(0, 500);
       });
       if (JSON.stringify(merged).length < 300000) game.lessonsUnlocked = merged;
+    }
+    // Étoiles des niveaux : { quizId: { niveau: { stars, score, combos, exam } } } — on garde le meilleur.
+    if (levelStars && typeof levelStars === "object" && !Array.isArray(levelStars)) {
+      const cur = game.levelStars && typeof game.levelStars === "object" ? game.levelStars : {};
+      const out = { ...cur };
+      Object.keys(levelStars).slice(0, 3000).forEach((qid) => {
+        const lv = levelStars[qid];
+        if (String(qid).length > 80 || !lv || typeof lv !== "object") return;
+        const o = { ...(out[qid] && typeof out[qid] === "object" ? out[qid] : {}) };
+        Object.keys(lv).slice(0, 400).forEach((k) => {
+          if (!/^\d{1,4}$/.test(k)) return;
+          const a = o[k] || {}, b = lv[k] || {};
+          const num = (v, max) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(max, Math.floor(Number(v)))) : 0);
+          o[k] = { stars: Math.max(num(a.stars, 3), num(b.stars, 3)), score: Math.max(num(a.score, 1e9), num(b.score, 1e9)), combos: Math.max(num(a.combos, 1e6), num(b.combos, 1e6)), exam: !!(a.exam && b.exam) || (!a.stars && !!b.exam) };
+        });
+        out[qid] = o;
+      });
+      if (JSON.stringify(out).length < 400000) game.levelStars = out;
     }
 
     const patch = { game };
